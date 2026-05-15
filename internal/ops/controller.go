@@ -134,7 +134,7 @@ func (c Controller) CreateWithProgress(ctx context.Context, p domain.Profile, ap
 		{name: "Connect to outer VPS and create directories", run: func() error {
 			return remoteRequired(ctx, &log, c, p, "mkdir -p "+shellQuote(c.Store.BaseDir)+" "+shellQuote(c.Store.ProfilesDir))
 		}},
-		{name: "Install/check nginx and Xray on outer VPS", run: func() error {
+		{name: "Install/check Xray on outer VPS", run: func() error {
 			return remoteRequired(ctx, &log, c, p, remoteBootstrapCommand(p.RemoteXrayBin))
 		}},
 		{name: "Validate outer local ports", run: func() error {
@@ -534,12 +534,6 @@ if command -v apt-get >/dev/null 2>&1; then
   apt-get install unzip -y
 elif ! command -v unzip >/dev/null 2>&1; then
   install_pkg unzip
-fi
-if ! command -v nginx >/dev/null 2>&1; then
-  install_pkg nginx
-fi
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl enable --now nginx || true
 fi
 if ! test -x %[1]s; then
   bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --without-geodata
