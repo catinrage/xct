@@ -163,6 +163,47 @@ func TestSettingsSocksFieldsAreReactive(t *testing.T) {
 	}
 }
 
+func TestPasswordAuthProfileActionPromptsForPassword(t *testing.T) {
+	t.Setenv("XCT_SSH_PASSWORD", "")
+	ctrl := ops.New(t.TempDir())
+	profile := savePasswordAuthProfile(t, ctrl)
+	m := NewModel(ctrl, build.Info{Version: "test"})
+	m.activeProfile = profile
+	m.inProfile = true
+
+	model, _ := m.startAction(actionStatus)
+	got := model.(Model)
+
+	if got.formAction != actionProfilePassword {
+		t.Fatalf("expected password prompt form, got action %d", got.formAction)
+	}
+	if got.pendingAction != actionStatus || got.pendingProfile != profile {
+		t.Fatalf("expected pending status action for %q, got action=%d profile=%q", profile, got.pendingAction, got.pendingProfile)
+	}
+	if !hasField(got.fields, "ssh_password") {
+		t.Fatalf("expected ssh_password field in password prompt")
+	}
+}
+
+func TestLocalProfileActionDoesNotPromptForPassword(t *testing.T) {
+	t.Setenv("XCT_SSH_PASSWORD", "")
+	ctrl := ops.New(t.TempDir())
+	profile := savePasswordAuthProfile(t, ctrl)
+	m := NewModel(ctrl, build.Info{Version: "test"})
+	m.activeProfile = profile
+	m.inProfile = true
+
+	model, _ := m.startAction(actionShow)
+	got := model.(Model)
+
+	if got.formAction == actionProfilePassword {
+		t.Fatalf("show should not prompt for an SSH password")
+	}
+	if got.mode != modeRunning {
+		t.Fatalf("expected show action to run, got mode %d", got.mode)
+	}
+}
+
 func hasField(fields []field, key string) bool {
 	for _, f := range fields {
 		if f.key == key {
@@ -194,4 +235,32 @@ func settingsForTest() settings.Settings {
 	cfg.UpdateSOCKSHost = "127.0.0.1"
 	cfg.UpdateSOCKSPort = 1080
 	return cfg
+}
+
+func savePasswordAuthProfile(t *testing.T, ctrl ops.Controller) string {
+	t.Helper()
+	p := domain.Profile{
+		Profile:               "password-profile",
+		Type:                  domain.Direct,
+		Domain:                "example.com",
+		CDNPort:               443,
+		WSPath:                "/xct-password-profile",
+		BackendPort:           18080,
+		RemoteUUID:            "remote-uuid",
+		OuterLocalVLESSListen: "127.0.0.1",
+		OuterLocalVLESSPort:   21001,
+		OuterLocalVLESSUUID:   "outer-vless-uuid",
+		OuterSocksListen:      "127.0.0.1",
+		OuterSocksPort:        21002,
+		SSHHost:               "outer.example.com",
+		SSHPort:               22,
+		SSHUser:               "root",
+		SSHAuth:               domain.SSHPassword,
+		RemoteRootMode:        "root",
+	}
+	p.FillDerivedPaths(ctrl.Store.BaseDir)
+	if err := ctrl.Store.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	return p.Profile
 }

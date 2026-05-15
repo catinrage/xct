@@ -380,7 +380,11 @@ func (c Controller) RemoteCommand(ctx context.Context, p domain.Profile, cmd str
 	}
 	args = append(args, p.SSHUser+"@"+p.SSHHost, remote)
 	if p.SSHAuth == domain.SSHPassword {
-		args = append([]string{"-p", os.Getenv("XCT_SSH_PASSWORD"), "ssh"}, args...)
+		password := os.Getenv("XCT_SSH_PASSWORD")
+		if password == "" {
+			return "", errors.New("outer SSH password is required for this password-auth profile")
+		}
+		args = append([]string{"-p", password, "ssh"}, args...)
 		return c.Runner.Run(ctx, "sshpass", args...)
 	}
 	return c.Runner.Run(ctx, "ssh", args...)
@@ -393,7 +397,11 @@ func (c Controller) RemotePut(ctx context.Context, p domain.Profile, content []b
 	var out string
 	var err error
 	if p.SSHAuth == domain.SSHPassword {
-		args = append([]string{"-p", os.Getenv("XCT_SSH_PASSWORD"), "ssh"}, args...)
+		password := os.Getenv("XCT_SSH_PASSWORD")
+		if password == "" {
+			return "", errors.New("outer SSH password is required for this password-auth profile")
+		}
+		args = append([]string{"-p", password, "ssh"}, args...)
 		out, err = c.Runner.RunInput(ctx, content, "sshpass", args...)
 	} else {
 		out, err = c.Runner.RunInput(ctx, content, "ssh", args...)

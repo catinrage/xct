@@ -47,6 +47,7 @@ const (
 	actionInstallDependencies
 	actionEditSettings
 	actionTestUpdateSocks
+	actionProfilePassword
 	actionBack
 	actionQuit
 )
@@ -95,15 +96,17 @@ type progressDoneMsg struct {
 }
 
 type Model struct {
-	controller    ops.Controller
-	buildInfo     build.Info
-	settingsStore settings.Store
-	mode          mode
-	menu          []menuItem
-	selected      int
-	profiles      []domain.Profile
-	inProfile     bool
-	activeProfile string
+	controller     ops.Controller
+	buildInfo      build.Info
+	settingsStore  settings.Store
+	mode           mode
+	menu           []menuItem
+	selected       int
+	profiles       []domain.Profile
+	inProfile      bool
+	activeProfile  string
+	pendingAction  action
+	pendingProfile string
 
 	formAction action
 	allFields  []field
@@ -446,6 +449,9 @@ func (m Model) fieldHidden(f field, values map[string]string) bool {
 	case "use_update_socks":
 		return !m.settingsSOCKSAvailable()
 	case "ssh_password":
+		if m.formAction == actionProfilePassword {
+			return false
+		}
 		return values["ssh_auth"] != string(domain.SSHPassword)
 	case "ssh_key":
 		return values["ssh_auth"] == string(domain.SSHPassword)
@@ -595,15 +601,54 @@ func (m Model) startAction(act action) (tea.Model, tea.Cmd) {
 		}))
 	case actionRescue:
 		profileName := m.activeProfile
-		return m.startProgress("Rescue "+profileName, func(progress ops.ProgressFunc) (string, error) {
-			return m.controller.ResumeWithProgress(context.Background(), profileName, true, progress)
-		})
+		if m.shouldPromptProfilePassword(actionRescue, profileName) {
+			return m.startProfilePasswordPrompt(actionRescue, profileName)
+		}
+		return m.startRescue(profileName)
 	default:
-		m.mode = modeRunning
 		profileName := m.activeProfile
-		return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
-			return m.runProfileAction(context.Background(), act, profileName, false)
-		}))
+		if m.shouldPromptProfilePassword(act, profileName) {
+			return m.startProfilePasswordPrompt(act, profileName)
+		}
+		return m.startProfileAction(act, profileName)
+	}
+}
+
+func (m Model) startProfilePasswordPrompt(act action, profileName string) (tea.Model, tea.Cmd) {
+	m.pendingAction = act
+	m.pendingProfile = profileName
+	return m.startForm(actionProfilePassword, []field{
+		{key: "ssh_password", label: "Outer SSH password", secret: true},
+	})
+}
+
+func (m Model) startProfileAction(act action, profileName string) (tea.Model, tea.Cmd) {
+	m.mode = modeRunning
+	return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
+		return m.runProfileAction(context.Background(), act, profileName, false)
+	}))
+}
+
+func (m Model) startRescue(profileName string) (tea.Model, tea.Cmd) {
+	return m.startProgress("Rescue "+profileName, func(progress ops.ProgressFunc) (string, error) {
+		return m.controller.ResumeWithProgress(context.Background(), profileName, true, progress)
+	})
+}
+
+func (m Model) shouldPromptProfilePassword(act action, profileName string) bool {
+	if !profileActionNeedsRemote(act) || os.Getenv("XCT_SSH_PASSWORD") != "" || profileName == "" {
+		return false
+	}
+	p, err := m.controller.Load(profileName)
+	return err == nil && p.SSHAuth == domain.SSHPassword
+}
+
+func profileActionNeedsRemote(act action) bool {
+	switch act {
+	case actionShow, actionOutbound:
+		return false
+	default:
+		return true
 	}
 }
 
@@ -626,6 +671,20 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	values := m.collectFormValues()
 
 	switch m.formAction {
+	case actionProfilePassword:
+		password := values["ssh_password"]
+		if password == "" {
+			m.mode = modeOutput
+			m.err = fmt.Errorf("outer SSH password is required")
+			m.output = "Outer SSH password is required for this password-auth profile.\n"
+			m.viewport.SetContent(m.output)
+			return m, nil
+		}
+		_ = os.Setenv("XCT_SSH_PASSWORD", password)
+		if m.pendingAction == actionRescue {
+			return m.startRescue(m.pendingProfile)
+		}
+		return m.startProfileAction(m.pendingAction, m.pendingProfile)
 	case actionEditSettings:
 		cfg := settingsFromValues(values)
 		m.mode = modeRunning
@@ -845,7 +904,10 @@ func (m Model) viewMenu() string {
 
 func (m Model) viewForm() string {
 	var b strings.Builder
-	if m.mode == modeProfilePrompt {
+	if m.formAction == actionProfilePassword {
+		b.WriteString(titleStyle.Render("Outer SSH password") + "\n")
+		b.WriteString(mutedStyle.Render("Password-auth profiles need the outer VPS password for remote actions after the app restarts.") + "\n\n")
+	} else if m.mode == modeProfilePrompt {
 		b.WriteString(titleStyle.Render("Profile action") + "\n\n")
 	} else if m.formAction == actionEditSettings {
 		b.WriteString(titleStyle.Render("Settings") + "\n")
