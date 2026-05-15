@@ -289,7 +289,8 @@ func (c Controller) Test(ctx context.Context, name string) (string, error) {
 	appendText(&log, "[4] Outer service/listeners")
 	appendRemote(ctx, &log, c, p, "systemctl is-active --quiet "+shellQuote(p.OuterService)+" && echo OK: outer service active || echo FAIL: outer service inactive")
 	appendRemote(ctx, &log, c, p, "ss -lntp | grep -E '"+outerListenerExpr(p)+"' || true")
-	appendText(&log, "[5] Outer public WebSocket to Iran/CDN")
+	appendText(&log, "[5] Outer TLS trust and public WebSocket to Iran/CDN")
+	appendRemote(ctx, &log, c, p, "curl -4 -sS -I "+shellQuote("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+"/")+" --connect-timeout 8 --max-time 12 || true")
 	appendRemote(ctx, &log, c, p, "curl "+strings.Join(shellQuoteArgs(wsArgs("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+p.WSPath)), " ")+" || true")
 	if p.Type == domain.Reverse {
 		appendText(&log, "[6] End-to-end reverse: Iran local SOCKS exits outer")
@@ -525,14 +526,18 @@ install_pkg() {
     return 1
   fi
 }
-if ! command -v curl >/dev/null 2>&1; then
-  install_pkg curl ca-certificates
-fi
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update
-  apt-get install unzip -y
+  apt-get install -y curl unzip ca-certificates
 elif ! command -v unzip >/dev/null 2>&1; then
-  install_pkg unzip
+  install_pkg curl unzip ca-certificates
+elif ! command -v curl >/dev/null 2>&1; then
+  install_pkg curl ca-certificates
+elif ! test -e /etc/ssl/certs/ca-certificates.crt; then
+  install_pkg ca-certificates
+fi
+if command -v update-ca-certificates >/dev/null 2>&1; then
+  update-ca-certificates
 fi
 if ! test -x %[1]s; then
   bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --without-geodata

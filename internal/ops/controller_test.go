@@ -14,7 +14,8 @@ func TestRemoteBootstrapCommandInstallsOuterPrereqs(t *testing.T) {
 		"apt-get install -y",
 		"dnf install -y",
 		"yum install -y",
-		"apt-get install unzip -y",
+		"apt-get install -y curl unzip ca-certificates",
+		"update-ca-certificates",
 		`bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --without-geodata`,
 		"test -x '/usr/local/bin/xray'",
 	} {
