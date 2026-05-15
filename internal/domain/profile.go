@@ -77,6 +77,9 @@ type Profile struct {
 	SSHSOCKSUser    string
 	SSHSOCKSPass    string
 	RemoteRootMode  string
+
+	DeployStatus string
+	FailedStep   string
 }
 
 var (

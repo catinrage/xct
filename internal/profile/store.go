@@ -175,6 +175,8 @@ func EncodeEnv(p domain.Profile) string {
 		{"SSH_SOCKS_USER", p.SSHSOCKSUser},
 		{"SSH_SOCKS_PASS", p.SSHSOCKSPass},
 		{"REMOTE_ROOT_MODE", p.RemoteRootMode},
+		{"DEPLOY_STATUS", p.DeployStatus},
+		{"FAILED_STEP", p.FailedStep},
 	}
 	var b strings.Builder
 	for _, field := range fields {
@@ -227,6 +229,8 @@ func DecodeEnv(values map[string]string) domain.Profile {
 		SSHSOCKSUser:          values["SSH_SOCKS_USER"],
 		SSHSOCKSPass:          values["SSH_SOCKS_PASS"],
 		RemoteRootMode:        values["REMOTE_ROOT_MODE"],
+		DeployStatus:          values["DEPLOY_STATUS"],
+		FailedStep:            values["FAILED_STEP"],
 	}
 }
 

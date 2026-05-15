@@ -41,8 +41,12 @@ const (
 	actionTune
 	actionDelete
 	actionRescue
+	actionGenerateLog
 	actionUpdate
 	actionSettings
+	actionInstallDependencies
+	actionEditSettings
+	actionTestUpdateSocks
 	actionBack
 	actionQuit
 )
@@ -53,6 +57,7 @@ type menuItem struct {
 	act         action
 	profileName string
 	separator   bool
+	disabled    bool
 }
 
 type mode int
@@ -80,6 +85,15 @@ type resultMsg struct {
 	err    error
 }
 
+type progressMsg struct {
+	event ops.ProgressEvent
+}
+
+type progressDoneMsg struct {
+	output string
+	err    error
+}
+
 type Model struct {
 	controller    ops.Controller
 	buildInfo     build.Info
@@ -97,12 +111,14 @@ type Model struct {
 	focus      int
 	helpOpen   bool
 
-	spinner  spinner.Model
-	viewport viewport.Model
-	output   string
-	err      error
-	width    int
-	height   int
+	spinner    spinner.Model
+	viewport   viewport.Model
+	output     string
+	err        error
+	width      int
+	height     int
+	progress   []ops.ProgressEvent
+	progressCh <-chan tea.Msg
 }
 
 var (
@@ -156,7 +172,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "esc", "q":
 				m.mode = modeMenu
-				m = m.withMainMenu()
+				if m.inProfile && m.activeProfile != "" {
+					m.menu = profileActionMenu(m.activeProfile)
+					m.selected = m.firstSelectable()
+				} else {
+					m = m.withMainMenu()
+				}
 				return m, nil
 			}
 			var cmd tea.Cmd
@@ -172,6 +193,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 	case resultMsg:
+		m.mode = modeOutput
+		m.output = msg.output
+		m.err = msg.err
+		if msg.err != nil {
+			m.output += "\nERROR: " + msg.err.Error() + "\n"
+		}
+		m.viewport.SetContent(m.output)
+		m.viewport.GotoTop()
+		return m, nil
+	case progressMsg:
+		m.upsertProgress(msg.event)
+		return m, waitProgressCmd(m.progressCh)
+	case progressDoneMsg:
 		m.mode = modeOutput
 		m.output = msg.output
 		m.err = msg.err
@@ -198,6 +232,9 @@ func (m Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if item.separator {
 			return m, nil
 		}
+		if item.disabled {
+			return m, nil
+		}
 		if item.act == actionQuit {
 			return m, tea.Quit
 		}
@@ -220,9 +257,20 @@ func (m Model) withMainMenu() Model {
 	}
 	m.inProfile = false
 	m.activeProfile = ""
+	deps := m.controller.CheckLocalDependencies(context.Background())
+	createHelp := "Iran local SOCKS/VLESS exits through outer VPS"
+	createDirectHelp := "Outer local SOCKS/VLESS exits through Iran VPS"
+	createDisabled := false
+	if !deps.OK() {
+		createDisabled = true
+		missing := strings.Join(deps.Missing, ", ")
+		createHelp = "disabled: install missing dependencies first: " + missing
+		createDirectHelp = createHelp
+	}
 	m.menu = []menuItem{
-		{title: "Create reverse profile", help: "Iran local SOCKS/VLESS exits through outer VPS", act: actionCreateReverse},
-		{title: "Create direct profile", help: "Outer local SOCKS/VLESS exits through Iran VPS", act: actionCreateDirect},
+		{title: "Create reverse profile", help: createHelp, act: actionCreateReverse, disabled: createDisabled},
+		{title: "Create direct profile", help: createDirectHelp, act: actionCreateDirect, disabled: createDisabled},
+		{title: "Install dependencies", help: "Install nginx, sshpass, ncat, netcat-openbsd, curl", act: actionInstallDependencies},
 		{title: "Update", help: "Check GitHub releases and install latest build", act: actionUpdate},
 		{title: "Settings", help: "Configure update SOCKS5 proxy", act: actionSettings},
 		{separator: true},
@@ -254,6 +302,7 @@ func profileActionMenu(name string) []menuItem {
 		{title: "Outbound snippet", help: "Print x-ui outbound JSON", act: actionOutbound},
 		{title: "Test", help: "Run layered local and remote tunnel checks", act: actionTest},
 		{title: "Debug", help: "Print status, logs, listeners, and tests", act: actionDebug},
+		{title: "Generate log", help: "Create a profile diagnostic log file", act: actionGenerateLog},
 		{title: "Status", help: "Show service and listener state", act: actionStatus},
 		{separator: true},
 		{title: "Start", help: "Start Iran and outer services", act: actionStart},
@@ -271,6 +320,16 @@ func profileActionMenu(name string) []menuItem {
 	}
 }
 
+func settingsActionMenu() []menuItem {
+	return []menuItem{
+		{title: "Edit update SOCKS", help: "Set SOCKS5 proxy used for GitHub checks/downloads", act: actionEditSettings},
+		{title: "Test update SOCKS", help: "Check GitHub release access with current settings", act: actionTestUpdateSocks},
+		{separator: true},
+		{title: "Back", help: "Return to profile list", act: actionBack},
+		{title: "Quit", help: "Exit", act: actionQuit},
+	}
+}
+
 func (m *Model) moveSelection(delta int) {
 	if len(m.menu) == 0 {
 		return
@@ -281,7 +340,7 @@ func (m *Model) moveSelection(delta int) {
 		if next < 0 || next >= len(m.menu) {
 			return
 		}
-		if !m.menu[next].separator {
+		if !m.menu[next].separator && !m.menu[next].disabled {
 			m.selected = next
 			return
 		}
@@ -290,7 +349,7 @@ func (m *Model) moveSelection(delta int) {
 
 func (m Model) firstSelectable() int {
 	for i, item := range m.menu {
-		if !item.separator {
+		if !item.separator && !item.disabled {
 			return i
 		}
 	}
@@ -380,7 +439,27 @@ func (m Model) startAction(act action) (tea.Model, tea.Cmd) {
 	case actionBack:
 		return m.withMainMenu(), nil
 	case actionSettings:
+		m.inProfile = false
+		m.activeProfile = ""
+		m.menu = settingsActionMenu()
+		m.selected = m.firstSelectable()
+		return m, nil
+	case actionEditSettings:
 		return m.startForm(act, m.settingsFields())
+	case actionTestUpdateSocks:
+		m.mode = modeRunning
+		return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
+			cfg, err := m.settingsStore.Load()
+			if err != nil {
+				return "", err
+			}
+			return update.Client{Settings: cfg, Build: m.buildInfo}.Check(context.Background())
+		}))
+	case actionInstallDependencies:
+		m.mode = modeRunning
+		return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
+			return m.controller.InstallLocalDependencies(context.Background())
+		}))
 	case actionUpdate:
 		m.mode = modeRunning
 		return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
@@ -391,11 +470,10 @@ func (m Model) startAction(act action) (tea.Model, tea.Cmd) {
 			return update.Client{Settings: cfg, Build: m.buildInfo}.Install(context.Background(), false)
 		}))
 	case actionRescue:
-		m.mode = modeRunning
 		profileName := m.activeProfile
-		return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
-			return m.runProfileAction(context.Background(), actionRescue, profileName, true)
-		}))
+		return m.startProgress("Rescue "+profileName, func(progress ops.ProgressFunc) (string, error) {
+			return m.controller.ResumeWithProgress(context.Background(), profileName, true, progress)
+		})
 	default:
 		m.mode = modeRunning
 		profileName := m.activeProfile
@@ -440,7 +518,7 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	}
 
 	switch m.formAction {
-	case actionSettings:
+	case actionEditSettings:
 		cfg := settingsFromValues(values)
 		m.mode = modeRunning
 		return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
@@ -450,6 +528,28 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 			return "Settings saved.\n", nil
 		}))
 	case actionCreateReverse, actionCreateDirect:
+		if yes(values["use_update_socks"]) {
+			cfg, err := m.settingsStore.Load()
+			if err != nil {
+				m.mode = modeOutput
+				m.err = err
+				m.output = "Could not load settings.\nERROR: " + err.Error() + "\n"
+				m.viewport.SetContent(m.output)
+				return m, nil
+			}
+			if !cfg.UpdateSOCKSEnabled || cfg.UpdateSOCKSHost == "" {
+				m.mode = modeOutput
+				m.err = fmt.Errorf("settings SOCKS5 is not enabled or has no host")
+				m.output = "Cannot use settings SOCKS5 for this profile.\nERROR: settings SOCKS5 is not enabled or has no host\n"
+				m.viewport.SetContent(m.output)
+				return m, nil
+			}
+			values["ssh_socks_enabled"] = "yes"
+			values["ssh_socks_host"] = cfg.UpdateSOCKSHost
+			values["ssh_socks_port"] = strconv.Itoa(cfg.UpdateSOCKSPort)
+			values["ssh_socks_user"] = cfg.UpdateSOCKSUser
+			values["ssh_socks_pass"] = cfg.UpdateSOCKSPass
+		}
 		p, applyTuning, err := buildProfile(values, m.formAction)
 		if err != nil {
 			m.mode = modeOutput
@@ -461,10 +561,9 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 		if values["ssh_password"] != "" {
 			_ = os.Setenv("XCT_SSH_PASSWORD", values["ssh_password"])
 		}
-		m.mode = modeRunning
-		return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
-			return m.controller.Create(context.Background(), p, applyTuning)
-		}))
+		return m.startProgress("Create "+p.Profile, func(progress ops.ProgressFunc) (string, error) {
+			return m.controller.CreateWithProgress(context.Background(), p, applyTuning, false, progress)
+		})
 	default:
 		profileName := values["profile"]
 		applyTuning := yes(values["apply_tuning"])
@@ -485,6 +584,8 @@ func (m Model) runProfileAction(ctx context.Context, act action, profileName str
 		return m.controller.Test(ctx, profileName)
 	case actionDebug:
 		return m.controller.Debug(ctx, profileName)
+	case actionGenerateLog:
+		return m.controller.GenerateLog(ctx, profileName)
 	case actionStatus:
 		return m.controller.Status(ctx, profileName)
 	case actionStart:
@@ -508,6 +609,44 @@ func (m Model) runProfileAction(ctx context.Context, act action, profileName str
 	}
 }
 
+func (m Model) startProgress(title string, fn func(ops.ProgressFunc) (string, error)) (tea.Model, tea.Cmd) {
+	ch := make(chan tea.Msg)
+	m.mode = modeRunning
+	m.progress = []ops.ProgressEvent{{Step: title, Status: ops.StepInfo}}
+	m.progressCh = ch
+	go func() {
+		output, err := fn(func(event ops.ProgressEvent) {
+			ch <- progressMsg{event: event}
+		})
+		ch <- progressDoneMsg{output: output, err: err}
+		close(ch)
+	}()
+	return m, tea.Batch(m.spinner.Tick, waitProgressCmd(ch))
+}
+
+func waitProgressCmd(ch <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		if ch == nil {
+			return nil
+		}
+		msg, ok := <-ch
+		if !ok {
+			return progressDoneMsg{}
+		}
+		return msg
+	}
+}
+
+func (m *Model) upsertProgress(event ops.ProgressEvent) {
+	for i := range m.progress {
+		if m.progress[i].Step == event.Step {
+			m.progress[i] = event
+			return
+		}
+	}
+	m.progress = append(m.progress, event)
+}
+
 func (m Model) View() string {
 	switch m.mode {
 	case modeMenu:
@@ -515,7 +654,7 @@ func (m Model) View() string {
 	case modeForm, modeProfilePrompt:
 		return m.viewForm()
 	case modeRunning:
-		return boxStyle.Width(contentWidth(m.width)).Render(m.spinner.View() + " working...\n\nLong-running SSH/systemd operations can take a moment.")
+		return m.viewRunning()
 	case modeOutput:
 		header := titleStyle.Render("XCT Controller")
 		if m.err != nil {
@@ -525,6 +664,36 @@ func (m Model) View() string {
 	default:
 		return ""
 	}
+}
+
+func (m Model) viewRunning() string {
+	if len(m.progress) == 0 {
+		return boxStyle.Width(contentWidth(m.width)).Render(m.spinner.View() + " working...\n\nLong-running operations can take a moment.")
+	}
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Working") + "\n")
+	b.WriteString(mutedStyle.Render("Deployment progress is updated live. Failed steps are saved for Rescue.") + "\n\n")
+	for _, step := range m.progress {
+		icon := "·"
+		switch step.Status {
+		case ops.StepRunning:
+			icon = m.spinner.View()
+		case ops.StepDone:
+			icon = "✓"
+		case ops.StepFailed:
+			icon = "✗"
+		case ops.StepInfo:
+			icon = "i"
+		}
+		line := fmt.Sprintf("%s %s", icon, step.Step)
+		if step.Err != "" {
+			line += ": " + step.Err
+		} else if step.Detail != "" {
+			line += ": " + step.Detail
+		}
+		b.WriteString(line + "\n")
+	}
+	return boxStyle.Width(contentWidth(m.width)).Render(b.String())
 }
 
 func (m Model) viewMenu() string {
@@ -547,7 +716,9 @@ func (m Model) viewMenu() string {
 			continue
 		}
 		line := fmt.Sprintf("> %-24s %s", item.title, item.help)
-		if i == m.selected {
+		if item.disabled {
+			b.WriteString("> " + fmt.Sprintf("%-24s %s", mutedStyle.Render(item.title), mutedStyle.Render(item.help)) + "\n")
+		} else if i == m.selected {
 			b.WriteString(activeStyle.Render(line) + "\n")
 		} else {
 			b.WriteString("> " + fmt.Sprintf("%-24s %s", item.title, mutedStyle.Render(item.help)) + "\n")
@@ -561,7 +732,7 @@ func (m Model) viewForm() string {
 	var b strings.Builder
 	if m.mode == modeProfilePrompt {
 		b.WriteString(titleStyle.Render("Profile action") + "\n\n")
-	} else if m.formAction == actionSettings {
+	} else if m.formAction == actionEditSettings {
 		b.WriteString(titleStyle.Render("Settings") + "\n")
 		b.WriteString(mutedStyle.Render("Configure SOCKS5 for GitHub update checks/downloads.") + "\n\n")
 	} else {
@@ -683,6 +854,7 @@ func commonFields(kind string) []field {
 		{key: "ssh_auth", label: "SSH authentication", value: "key", choices: []string{"key", "password"}},
 		{key: "ssh_key", label: "SSH private key path, empty for default"},
 		{key: "ssh_password", label: "SSH password, only when auth=password", secret: true},
+		{key: "use_update_socks", label: "Use SOCKS5 from settings for SSH", value: "no", checkbox: true},
 		{key: "ssh_socks_enabled", label: "Use SOCKS proxy for SSH", value: "no", checkbox: true},
 		{key: "ssh_socks_host", label: "SOCKS host/IP for SSH"},
 		{key: "ssh_socks_port", label: "SOCKS port for SSH", value: "20130"},
@@ -831,6 +1003,7 @@ func fieldHelp(key string) string {
 		"ssh_auth":             "How the controller authenticates to the outer VPS. Choose key for SSH key/agent authentication, or password to use sshpass with the password field.",
 		"ssh_key":              "Optional private key path for SSH key authentication. Leave empty to let SSH use its default keys or agent.",
 		"ssh_password":         "Password for the outer SSH user. This is only used when SSH authentication is set to password.",
+		"use_update_socks":     "Copy the SOCKS5 proxy configured in Settings into the SSH-to-outer fields for this profile. Useful when GitHub and SSH both need the same proxy.",
 		"ssh_socks_enabled":    "Enable this when the Iran VPS cannot reach the outer VPS directly and SSH must be routed through a SOCKS5 proxy.",
 		"ssh_socks_host":       "SOCKS5 proxy host or IP used only for SSH from Iran to the outer VPS. Leave empty when SOCKS proxy is disabled.",
 		"ssh_socks_port":       "SOCKS5 proxy port used only for SSH from Iran to the outer VPS.",

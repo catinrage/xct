@@ -19,6 +19,38 @@ type Controller struct {
 	Runner Runner
 }
 
+type StepStatus string
+
+const (
+	StepPending StepStatus = "pending"
+	StepRunning StepStatus = "running"
+	StepDone    StepStatus = "done"
+	StepFailed  StepStatus = "failed"
+	StepInfo    StepStatus = "info"
+)
+
+type ProgressEvent struct {
+	Step   string
+	Status StepStatus
+	Detail string
+	Err    string
+}
+
+type ProgressFunc func(ProgressEvent)
+
+type deployStep struct {
+	name string
+	run  func() error
+}
+
+type DependencyStatus struct {
+	Missing []string
+}
+
+func (d DependencyStatus) OK() bool {
+	return len(d.Missing) == 0
+}
+
 func New(baseDir string) Controller {
 	return Controller{
 		Store:  profile.NewStore(baseDir),
@@ -26,7 +58,34 @@ func New(baseDir string) Controller {
 	}
 }
 
+func (c Controller) CheckLocalDependencies(ctx context.Context) DependencyStatus {
+	required := []string{"nginx", "ssh", "curl", "sshpass", "ncat", "nc"}
+	var missing []string
+	for _, cmd := range required {
+		if _, err := c.Runner.Run(ctx, "sh", "-c", "command -v "+shellQuote(cmd)); err != nil {
+			missing = append(missing, cmd)
+		}
+	}
+	return DependencyStatus{Missing: missing}
+}
+
+func (c Controller) InstallLocalDependencies(ctx context.Context) (string, error) {
+	var log strings.Builder
+	if os.Geteuid() != 0 {
+		return "", errors.New("install dependencies must be run as root on the Iran VPS")
+	}
+	if err := runRequired(ctx, &log, c.Runner, "sh", "-c", "apt-get update && apt-get install -y nginx curl openssh-client sshpass ncat netcat-openbsd"); err != nil {
+		return log.String(), err
+	}
+	appendText(&log, "Local dependencies installed.")
+	return log.String(), nil
+}
+
 func (c Controller) Create(ctx context.Context, p domain.Profile, applyTuning bool) (string, error) {
+	return c.CreateWithProgress(ctx, p, applyTuning, false, nil)
+}
+
+func (c Controller) CreateWithProgress(ctx context.Context, p domain.Profile, applyTuning bool, resume bool, progress ProgressFunc) (string, error) {
 	if os.Geteuid() != 0 {
 		return "", errors.New("create must be run as root on the Iran VPS")
 	}
@@ -49,72 +108,112 @@ func (c Controller) Create(ctx context.Context, p domain.Profile, applyTuning bo
 	if err != nil {
 		return "", err
 	}
+	p.DeployStatus = "in_progress"
+	if !resume {
+		p.FailedStep = ""
+	}
 	if err := c.Store.Save(p); err != nil {
 		return "", err
 	}
 	appendText(&log, "Saved profile state for rescue: "+p.Profile)
 
-	var writeErr error
-	writeStep(&log, &writeErr, os.WriteFile(p.IranNginxSite, files.NginxSite, 0o644), "write nginx site")
-	writeStep(&log, &writeErr, ensureSymlink(p.IranNginxSite, generate.NginxEnabledPath(p.IranNginxSite)), "enable nginx site")
-	writeStep(&log, &writeErr, os.WriteFile(p.IranXrayConfig, files.IranConfig, 0o600), "write Iran Xray config")
-	writeStep(&log, &writeErr, os.WriteFile(filepath.Join("/etc/systemd/system", p.IranService), files.IranService, 0o644), "write Iran systemd service")
-	if writeErr != nil {
-		return log.String(), writeErr
+	steps := []deployStep{
+		{name: "Write Iran nginx site", run: func() error { return os.WriteFile(p.IranNginxSite, files.NginxSite, 0o644) }},
+		{name: "Enable Iran nginx site", run: func() error { return ensureSymlink(p.IranNginxSite, generate.NginxEnabledPath(p.IranNginxSite)) }},
+		{name: "Write Iran Xray config", run: func() error { return os.WriteFile(p.IranXrayConfig, files.IranConfig, 0o600) }},
+		{name: "Write Iran systemd service", run: func() error {
+			return os.WriteFile(filepath.Join("/etc/systemd/system", p.IranService), files.IranService, 0o644)
+		}},
+		{name: "Test Iran Xray config", run: func() error {
+			return runRequired(ctx, &log, c.Runner, p.XrayBin, "run", "-test", "-config", p.IranXrayConfig)
+		}},
+		{name: "Test nginx config", run: func() error { return runRequired(ctx, &log, c.Runner, "nginx", "-t") }},
+		{name: "Reload nginx", run: func() error { return runRequired(ctx, &log, c.Runner, "systemctl", "reload", "nginx") }},
+		{name: "Reload systemd", run: func() error { return runRequired(ctx, &log, c.Runner, "systemctl", "daemon-reload") }},
+		{name: "Start Iran Xray service", run: func() error { return runRequired(ctx, &log, c.Runner, "systemctl", "enable", "--now", p.IranService) }},
+		{name: "Connect to outer VPS and create directories", run: func() error {
+			return remoteRequired(ctx, &log, c, p, "mkdir -p "+shellQuote(c.Store.BaseDir)+" "+shellQuote(c.Store.ProfilesDir))
+		}},
+		{name: "Install/check nginx and Xray on outer VPS", run: func() error {
+			return remoteRequired(ctx, &log, c, p, remoteBootstrapCommand(p.RemoteXrayBin))
+		}},
+		{name: "Upload outer Xray config", run: func() error {
+			return remotePutRequired(ctx, &log, c, p, files.OuterConfig, p.OuterXrayConfig, "600")
+		}},
+		{name: "Upload outer systemd service", run: func() error {
+			return remotePutRequired(ctx, &log, c, p, files.OuterService, filepath.Join("/etc/systemd/system", p.OuterService), "644")
+		}},
+		{name: "Test outer Xray config", run: func() error {
+			return remoteRequired(ctx, &log, c, p, shellQuote(p.RemoteXrayBin)+" run -test -config "+shellQuote(p.OuterXrayConfig))
+		}},
+		{name: "Start outer Xray service", run: func() error {
+			return remoteRequired(ctx, &log, c, p, "systemctl daemon-reload && systemctl enable --now "+shellQuote(p.OuterService))
+		}},
 	}
-
-	if err := runRequired(ctx, &log, c.Runner, p.XrayBin, "run", "-test", "-config", p.IranXrayConfig); err != nil {
-		return log.String(), err
-	}
-	if err := runRequired(ctx, &log, c.Runner, "nginx", "-t"); err != nil {
-		return log.String(), err
-	}
-	if err := runRequired(ctx, &log, c.Runner, "systemctl", "reload", "nginx"); err != nil {
-		return log.String(), err
-	}
-	if err := runRequired(ctx, &log, c.Runner, "systemctl", "daemon-reload"); err != nil {
-		return log.String(), err
-	}
-	if err := runRequired(ctx, &log, c.Runner, "systemctl", "enable", "--now", p.IranService); err != nil {
-		return log.String(), err
-	}
-
-	if err := remoteRequired(ctx, &log, c, p, "mkdir -p "+shellQuote(c.Store.BaseDir)+" "+shellQuote(c.Store.ProfilesDir)); err != nil {
-		return log.String(), err
-	}
-	if err := remoteRequired(ctx, &log, c, p, remoteBootstrapCommand(p.RemoteXrayBin)); err != nil {
-		return log.String(), err
-	}
-	if err := remotePutRequired(ctx, &log, c, p, files.OuterConfig, p.OuterXrayConfig, "600"); err != nil {
-		return log.String(), err
-	}
-	if err := remotePutRequired(ctx, &log, c, p, files.OuterService, filepath.Join("/etc/systemd/system", p.OuterService), "644"); err != nil {
-		return log.String(), err
-	}
-	if err := remoteRequired(ctx, &log, c, p, shellQuote(p.RemoteXrayBin)+" run -test -config "+shellQuote(p.OuterXrayConfig)); err != nil {
-		return log.String(), err
-	}
-	if err := remoteRequired(ctx, &log, c, p, "systemctl daemon-reload && systemctl enable --now "+shellQuote(p.OuterService)); err != nil {
-		return log.String(), err
-	}
-
 	if applyTuning {
-		appendText(&log, "Applying OS tuning on Iran and outer")
-		appendRun(ctx, &log, c.Runner, "modprobe", "tcp_bbr")
-		appendRun(ctx, &log, c.Runner, "sh", "-c", tuningCommand())
-		appendRemote(ctx, &log, c, p, tuningCommand())
+		steps = append(steps,
+			deployStep{name: "Load BBR module on Iran", run: func() error {
+				appendRun(ctx, &log, c.Runner, "modprobe", "tcp_bbr")
+				return nil
+			}},
+			deployStep{name: "Apply OS tuning on Iran", run: func() error { return runRequired(ctx, &log, c.Runner, "sh", "-c", tuningCommand()) }},
+			deployStep{name: "Apply OS tuning on outer VPS", run: func() error { return remoteRequired(ctx, &log, c, p, tuningCommand()) }},
+		)
 	}
 
+	start := 0
+	if resume && p.FailedStep != "" {
+		for i, step := range steps {
+			if step.name == p.FailedStep {
+				start = i
+				break
+			}
+		}
+		appendText(&log, "Resuming from step: "+p.FailedStep)
+		if progress != nil {
+			progress(ProgressEvent{Step: p.FailedStep, Status: StepInfo, Detail: "resuming from last failed step"})
+		}
+	}
+	for i := start; i < len(steps); i++ {
+		step := steps[i]
+		if progress != nil {
+			progress(ProgressEvent{Step: step.name, Status: StepRunning})
+		}
+		appendText(&log, "==> "+step.name)
+		if err := step.run(); err != nil {
+			p.DeployStatus = "failed"
+			p.FailedStep = step.name
+			_ = c.Store.Save(p)
+			if progress != nil {
+				progress(ProgressEvent{Step: step.name, Status: StepFailed, Err: err.Error()})
+			}
+			return log.String(), err
+		}
+		if progress != nil {
+			progress(ProgressEvent{Step: step.name, Status: StepDone})
+		}
+	}
+
+	p.DeployStatus = "complete"
+	p.FailedStep = ""
+	_ = c.Store.Save(p)
 	appendText(&log, "Created profile "+p.Profile)
 	return log.String(), nil
 }
 
 func (c Controller) Resume(ctx context.Context, name string, applyTuning bool) (string, error) {
+	return c.ResumeWithProgress(ctx, name, applyTuning, nil)
+}
+
+func (c Controller) ResumeWithProgress(ctx context.Context, name string, applyTuning bool, progress ProgressFunc) (string, error) {
 	p, err := c.Load(name)
 	if err != nil {
 		return "", err
 	}
-	return c.Create(ctx, p, applyTuning)
+	if p.DeployStatus == "complete" && p.FailedStep == "" {
+		return "Nothing to rescue. Profile deployment is marked complete.\n", nil
+	}
+	return c.CreateWithProgress(ctx, p, applyTuning, true, progress)
 }
 
 func (c Controller) List() ([]domain.Profile, error) {
@@ -221,6 +320,21 @@ func (c Controller) Debug(ctx context.Context, name string) (string, error) {
 	appendText(&log, "--- layered test ---")
 	appendText(&log, test)
 	return log.String(), nil
+}
+
+func (c Controller) GenerateLog(ctx context.Context, name string) (string, error) {
+	output, err := c.Debug(ctx, name)
+	if err != nil {
+		return output, err
+	}
+	path := filepath.Join(c.Store.ProfileDir(name), name+".log")
+	if mkErr := os.MkdirAll(filepath.Dir(path), 0o700); mkErr != nil {
+		return output, mkErr
+	}
+	if writeErr := os.WriteFile(path, []byte(output), 0o600); writeErr != nil {
+		return output, writeErr
+	}
+	return "Generated diagnostic log:\n" + path + "\n\n" + output, nil
 }
 
 func (c Controller) Tune(ctx context.Context, name string) (string, error) {
@@ -404,6 +518,12 @@ install_pkg() {
 if ! command -v curl >/dev/null 2>&1; then
   install_pkg curl ca-certificates
 fi
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update
+  apt-get install unzip -y
+elif ! command -v unzip >/dev/null 2>&1; then
+  install_pkg unzip
+fi
 if ! command -v nginx >/dev/null 2>&1; then
   install_pkg nginx
 fi
@@ -411,8 +531,7 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl enable --now nginx || true
 fi
 if ! test -x %[1]s; then
-  curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh -o /tmp/xct-xray-install.sh
-  bash /tmp/xct-xray-install.sh install
+  bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --without-geodata
 fi
 if ! test -x %[1]s && test -x /usr/local/bin/xray; then
   mkdir -p %[2]s

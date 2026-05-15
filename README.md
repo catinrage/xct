@@ -36,6 +36,9 @@ Use this when applications on the outer VPS need an Iran exit.
 - commit-based GitHub release builds
 - self-update from the TUI
 - optional SOCKS5 proxy for GitHub update checks and downloads
+- local dependency gate before profile creation
+- live deployment progress with failed-step rescue
+- per-profile diagnostic log generation
 
 ## Requirements
 
@@ -81,9 +84,12 @@ The first screen shows:
 
 - create reverse profile
 - create direct profile
+- install dependencies
 - update
 - settings
 - existing profiles
+
+The create buttons are disabled until required local Iran-side tools are installed. Use `Install dependencies` from the main menu to install nginx, curl, SSH tools, `sshpass`, `ncat`, and `netcat-openbsd`.
 
 Select a profile to open its action menu:
 
@@ -91,6 +97,7 @@ Select a profile to open its action menu:
 - outbound snippet
 - test
 - debug
+- generate log
 - status
 - start / stop / restart
 - enable / disable
@@ -106,6 +113,14 @@ During profile creation:
 - `left` / `right` changes option fields
 - `ctrl+i` opens field help
 - `esc` returns to the menu
+
+During create and rescue actions the TUI shows each deployment step live. The current step shows a spinner, completed steps show a check mark, and failed steps are recorded in profile state so `Rescue` can continue from the failed step.
+
+Profile action menus also include `Generate log`, which writes a diagnostic log under the profile state directory:
+
+```text
+/etc/xray-cdn-tunnel-controller/profiles/PROFILE/PROFILE.log
+```
 
 ## Updates
 
@@ -128,6 +143,8 @@ Pushes to `main` create prerelease builds named like `0.0.RUN-SHA`. Tags matchin
 
 If GitHub is not directly reachable from the Iran VPS, open `Settings` from the main menu and configure the SOCKS5 proxy used for update checks and downloads.
 
+The same settings SOCKS5 proxy can also be reused during profile creation for SSH from Iran to the outer VPS.
+
 The settings are stored at:
 
 ```text
@@ -138,14 +155,7 @@ The settings are stored at:
 
 Profile state is saved before deployment starts. If creation fails midway, select the profile and run `Rescue`.
 
-Rescue reruns the idempotent deployment steps:
-
-- regenerate Iran config files
-- reload nginx/systemd
-- bootstrap the outer VPS
-- upload outer Xray config
-- upload outer systemd service
-- start/enable services
+Rescue continues from the failed deployment step when possible. If the profile is already marked complete, Rescue reports that there is nothing to rescue.
 
 ## Generated Files
 
