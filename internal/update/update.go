@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/proxy"
@@ -29,6 +30,12 @@ type Client struct {
 	Settings settings.Settings
 	Build    build.Info
 }
+
+var (
+	currentExecutable = os.Executable
+	resolveSymlinks   = filepath.EvalSymlinks
+	execProcess       = syscall.Exec
+)
 
 type Release struct {
 	Name        string  `json:"name"`
@@ -137,6 +144,30 @@ func (c Client) Install(ctx context.Context, force bool) (string, error) {
 	}
 	fmt.Fprintf(&b, "Update complete: %s -> %s\n", current, candidate.Version)
 	return b.String(), nil
+}
+
+func (c Client) InstallAndRestart(ctx context.Context, force bool) (string, error) {
+	output, err := c.Install(ctx, force)
+	if err != nil {
+		return output, err
+	}
+	if !strings.Contains(output, "Update complete:") {
+		return output, nil
+	}
+	output += "Restarting into updated binary...\n"
+	return output, RestartCurrentProcess()
+}
+
+func RestartCurrentProcess() error {
+	exe, err := currentExecutable()
+	if err != nil {
+		return err
+	}
+	exe, err = resolveSymlinks(exe)
+	if err != nil {
+		return err
+	}
+	return execProcess(exe, os.Args, os.Environ())
 }
 
 func (c Client) latest(ctx context.Context) (Candidate, error) {

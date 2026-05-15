@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -80,5 +81,47 @@ func TestExtractArchiveRejectsUnsafePath(t *testing.T) {
 	}
 	if err := extractArchive(archive, filepath.Join(dir, "out")); err == nil {
 		t.Fatalf("expected unsafe path to be rejected")
+	}
+}
+
+func TestRestartCurrentProcessExecsResolvedBinary(t *testing.T) {
+	oldExecutable := currentExecutable
+	oldResolve := resolveSymlinks
+	oldExec := execProcess
+	oldArgs := os.Args
+	t.Cleanup(func() {
+		currentExecutable = oldExecutable
+		resolveSymlinks = oldResolve
+		execProcess = oldExec
+		os.Args = oldArgs
+	})
+
+	os.Args = []string{"xct-controller", "--version"}
+	currentExecutable = func() (string, error) {
+		return "/tmp/xct-link", nil
+	}
+	resolveSymlinks = func(path string) (string, error) {
+		if path != "/tmp/xct-link" {
+			t.Fatalf("unexpected executable path: %s", path)
+		}
+		return "/usr/local/bin/xct-controller", nil
+	}
+
+	var gotPath string
+	var gotArgs []string
+	execProcess = func(path string, args []string, env []string) error {
+		gotPath = path
+		gotArgs = append([]string(nil), args...)
+		return nil
+	}
+
+	if err := RestartCurrentProcess(); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/usr/local/bin/xct-controller" {
+		t.Fatalf("unexpected exec path: %s", gotPath)
+	}
+	if !reflect.DeepEqual(gotArgs, []string{"xct-controller", "--version"}) {
+		t.Fatalf("unexpected exec args: %#v", gotArgs)
 	}
 }

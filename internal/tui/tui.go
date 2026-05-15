@@ -597,7 +597,7 @@ func (m Model) startAction(act action) (tea.Model, tea.Cmd) {
 			if err != nil {
 				return "", err
 			}
-			return update.Client{Settings: cfg, Build: m.buildInfo}.Install(context.Background(), false)
+			return update.Client{Settings: cfg, Build: m.buildInfo}.InstallAndRestart(context.Background(), false)
 		}))
 	case actionRescue:
 		profileName := m.activeProfile
