@@ -373,8 +373,7 @@ func (c Controller) Delete(ctx context.Context, name string) (string, error) {
 
 func (c Controller) RemoteCommand(ctx context.Context, p domain.Profile, cmd string) (string, error) {
 	args := sshArgs(p)
-	quoted := strconv.Quote(cmd)
-	remote := "bash -lc " + quoted
+	remote := "bash -lc " + shellQuote(cmd)
 	if p.RemoteRootMode != "root" {
 		remote = "sudo -n " + remote
 	}
