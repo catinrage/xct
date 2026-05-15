@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -225,6 +226,42 @@ func TestSuccessfulDeleteReturnsToMainMenuFromOutput(t *testing.T) {
 	}
 	if len(got.menu) == 0 || got.menu[0].act != actionCreateReverse {
 		t.Fatalf("expected main menu after q, got %#v", got.menu)
+	}
+}
+
+func TestRunningViewShowsTitleAndAbortHint(t *testing.T) {
+	m := NewModel(ops.New(t.TempDir()), build.Info{Version: "test"})
+	m.mode = modeRunning
+	m.runningTitle = "Testing profile demo"
+
+	view := m.viewRunning()
+	for _, want := range []string{"Testing profile demo", "Running command", "q/esc/ctrl+c: abort"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("running view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestRunningAbortCancelsCurrentAction(t *testing.T) {
+	m := NewModel(ops.New(t.TempDir()), build.Info{Version: "test"})
+	m.mode = modeRunning
+	m.runningTitle = "Testing profile demo"
+	cancelled := false
+	m.cancelRun = func() {
+		cancelled = true
+	}
+
+	model, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	got := model.(Model)
+
+	if cmd != nil {
+		t.Fatalf("expected abort key to stay in running mode without a command")
+	}
+	if !cancelled {
+		t.Fatalf("expected abort key to cancel current action")
+	}
+	if got.runningTitle != "Aborting Testing profile demo" {
+		t.Fatalf("unexpected abort title: %q", got.runningTitle)
 	}
 }
 

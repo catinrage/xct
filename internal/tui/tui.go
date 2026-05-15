@@ -108,6 +108,8 @@ type Model struct {
 	pendingAction  action
 	pendingProfile string
 	runningAction  action
+	runningTitle   string
+	cancelRun      context.CancelFunc
 
 	formAction action
 	allFields  []field
@@ -189,7 +191,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport, cmd = m.viewport.Update(msg)
 			return m, cmd
 		case modeRunning:
-			if msg.String() == "ctrl+c" {
+			switch msg.String() {
+			case "esc", "q", "ctrl+c":
+				if m.cancelRun != nil {
+					m.cancelRun()
+					m.runningTitle = "Aborting " + strings.TrimPrefix(m.runningTitle, "Aborting ")
+					return m, nil
+				}
 				return m, tea.Quit
 			}
 		}
@@ -209,6 +217,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.activeProfile = ""
 		}
 		m.runningAction = actionQuit
+		m.runningTitle = ""
+		m.cancelRun = nil
 		m.viewport.SetContent(m.output)
 		m.viewport.GotoTop()
 		return m, nil
@@ -222,6 +232,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.output += "\nERROR: " + msg.err.Error() + "\n"
 		}
+		m.runningTitle = ""
+		m.cancelRun = nil
 		m.viewport.SetContent(m.output)
 		m.viewport.GotoTop()
 		return m, nil
@@ -584,28 +596,25 @@ func (m Model) startAction(act action) (tea.Model, tea.Cmd) {
 	case actionEditSettings:
 		return m.startForm(act, m.settingsFields())
 	case actionTestUpdateSocks:
-		m.mode = modeRunning
-		return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
+		return m.startRunning("Testing update SOCKS", actionTestUpdateSocks, func(ctx context.Context) (string, error) {
 			cfg, err := m.settingsStore.Load()
 			if err != nil {
 				return "", err
 			}
-			return update.Client{Settings: cfg, Build: m.buildInfo}.Check(context.Background())
-		}))
+			return update.Client{Settings: cfg, Build: m.buildInfo}.Check(ctx)
+		})
 	case actionInstallDependencies:
-		m.mode = modeRunning
-		return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
-			return m.controller.InstallLocalDependencies(context.Background())
-		}))
+		return m.startRunning("Installing local dependencies", actionInstallDependencies, func(ctx context.Context) (string, error) {
+			return m.controller.InstallLocalDependencies(ctx)
+		})
 	case actionUpdate:
-		m.mode = modeRunning
-		return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
+		return m.startRunning("Updating controller", actionUpdate, func(ctx context.Context) (string, error) {
 			cfg, err := m.settingsStore.Load()
 			if err != nil {
 				return "", err
 			}
-			return update.Client{Settings: cfg, Build: m.buildInfo}.InstallAndRestart(context.Background(), false)
-		}))
+			return update.Client{Settings: cfg, Build: m.buildInfo}.InstallAndRestart(ctx, false)
+		})
 	case actionRescue:
 		profileName := m.activeProfile
 		if m.shouldPromptProfilePassword(actionRescue, profileName) {
@@ -630,16 +639,14 @@ func (m Model) startProfilePasswordPrompt(act action, profileName string) (tea.M
 }
 
 func (m Model) startProfileAction(act action, profileName string) (tea.Model, tea.Cmd) {
-	m.mode = modeRunning
-	m.runningAction = act
-	return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
-		return m.runProfileAction(context.Background(), act, profileName, false)
-	}))
+	return m.startRunning(actionTitle(act, profileName), act, func(ctx context.Context) (string, error) {
+		return m.runProfileAction(ctx, act, profileName, false)
+	})
 }
 
 func (m Model) startRescue(profileName string) (tea.Model, tea.Cmd) {
-	return m.startProgress("Rescue "+profileName, func(progress ops.ProgressFunc) (string, error) {
-		return m.controller.ResumeWithProgress(context.Background(), profileName, true, progress)
+	return m.startProgress("Rescue "+profileName, func(ctx context.Context, progress ops.ProgressFunc) (string, error) {
+		return m.controller.ResumeWithProgress(ctx, profileName, true, progress)
 	})
 }
 
@@ -657,6 +664,45 @@ func profileActionNeedsRemote(act action) bool {
 		return false
 	default:
 		return true
+	}
+}
+
+func actionTitle(act action, profileName string) string {
+	suffix := ""
+	if profileName != "" {
+		suffix = " " + profileName
+	}
+	switch act {
+	case actionShow:
+		return "Showing profile" + suffix
+	case actionOutbound:
+		return "Generating outbound snippet" + suffix
+	case actionTest:
+		return "Testing profile" + suffix
+	case actionDebug:
+		return "Debugging profile" + suffix
+	case actionStatus:
+		return "Checking profile status" + suffix
+	case actionStart:
+		return "Starting profile" + suffix
+	case actionStop:
+		return "Stopping profile" + suffix
+	case actionRestart:
+		return "Restarting profile" + suffix
+	case actionEnable:
+		return "Enabling profile" + suffix
+	case actionDisable:
+		return "Disabling profile" + suffix
+	case actionTune:
+		return "Applying tuning" + suffix
+	case actionDelete:
+		return "Deleting profile" + suffix
+	case actionGenerateLog:
+		return "Generating profile log" + suffix
+	case actionRescue:
+		return "Rescuing profile" + suffix
+	default:
+		return "Working" + suffix
 	}
 }
 
@@ -695,13 +741,12 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 		return m.startProfileAction(m.pendingAction, m.pendingProfile)
 	case actionEditSettings:
 		cfg := settingsFromValues(values)
-		m.mode = modeRunning
-		return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
+		return m.startRunning("Saving settings", actionEditSettings, func(ctx context.Context) (string, error) {
 			if err := m.settingsStore.Save(cfg); err != nil {
 				return "", err
 			}
 			return "Settings saved.\n", nil
-		}))
+		})
 	case actionCreateReverse, actionCreateDirect:
 		if yes(values["use_update_socks"]) {
 			cfg, err := m.settingsStore.Load()
@@ -743,16 +788,15 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 			m.viewport.SetContent(m.output)
 			return m, nil
 		}
-		return m.startProgress("Create "+p.Profile, func(progress ops.ProgressFunc) (string, error) {
-			return m.controller.CreateWithProgress(context.Background(), p, applyTuning, false, progress)
+		return m.startProgress("Create "+p.Profile, func(ctx context.Context, progress ops.ProgressFunc) (string, error) {
+			return m.controller.CreateWithProgress(ctx, p, applyTuning, false, progress)
 		})
 	default:
 		profileName := values["profile"]
 		applyTuning := yes(values["apply_tuning"])
-		m.mode = modeRunning
-		return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
-			return m.runProfileAction(context.Background(), m.formAction, profileName, applyTuning)
-		}))
+		return m.startRunning(actionTitle(m.formAction, profileName), m.formAction, func(ctx context.Context) (string, error) {
+			return m.runProfileAction(ctx, m.formAction, profileName, applyTuning)
+		})
 	}
 }
 
@@ -791,13 +835,28 @@ func (m Model) runProfileAction(ctx context.Context, act action, profileName str
 	}
 }
 
-func (m Model) startProgress(title string, fn func(ops.ProgressFunc) (string, error)) (tea.Model, tea.Cmd) {
-	ch := make(chan tea.Msg)
+func (m Model) startRunning(title string, act action, fn func(context.Context) (string, error)) (tea.Model, tea.Cmd) {
+	ctx, cancel := context.WithCancel(context.Background())
 	m.mode = modeRunning
+	m.runningAction = act
+	m.runningTitle = title
+	m.cancelRun = cancel
+	m.progress = nil
+	return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
+		return fn(ctx)
+	}))
+}
+
+func (m Model) startProgress(title string, fn func(context.Context, ops.ProgressFunc) (string, error)) (tea.Model, tea.Cmd) {
+	ch := make(chan tea.Msg)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.mode = modeRunning
+	m.runningTitle = title
+	m.cancelRun = cancel
 	m.progress = []ops.ProgressEvent{{Step: title, Status: ops.StepInfo}}
 	m.progressCh = ch
 	go func() {
-		output, err := fn(func(event ops.ProgressEvent) {
+		output, err := fn(ctx, func(event ops.ProgressEvent) {
 			ch <- progressMsg{event: event}
 		})
 		ch <- progressDoneMsg{output: output, err: err}
@@ -850,10 +909,22 @@ func (m Model) View() string {
 
 func (m Model) viewRunning() string {
 	if len(m.progress) == 0 {
-		return boxStyle.Width(contentWidth(m.width)).Render(m.spinner.View() + " working...\n\nLong-running operations can take a moment.")
+		title := m.runningTitle
+		if title == "" {
+			title = "Working"
+		}
+		var b strings.Builder
+		b.WriteString(titleStyle.Render(title) + "\n\n")
+		b.WriteString(m.spinner.View() + " " + mutedStyle.Render("Running command. This may take a moment.") + "\n\n")
+		b.WriteString(mutedStyle.Render("q/esc/ctrl+c: abort"))
+		return boxStyle.Width(contentWidth(m.width)).Render(b.String())
 	}
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Working") + "\n")
+	title := m.runningTitle
+	if title == "" {
+		title = "Working"
+	}
+	b.WriteString(titleStyle.Render(title) + "\n")
 	b.WriteString(mutedStyle.Render("Deployment progress is updated live. Failed steps are saved for Rescue.") + "\n\n")
 	for _, step := range m.progress {
 		icon := "·"
@@ -875,6 +946,7 @@ func (m Model) viewRunning() string {
 		}
 		b.WriteString(line + "\n")
 	}
+	b.WriteString("\n" + mutedStyle.Render("q/esc/ctrl+c: abort"))
 	return boxStyle.Width(contentWidth(m.width)).Render(b.String())
 }
 
