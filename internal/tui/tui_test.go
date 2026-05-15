@@ -3,6 +3,8 @@ package tui
 import (
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"xct/internal/build"
 	"xct/internal/domain"
 	"xct/internal/ops"
@@ -201,6 +203,28 @@ func TestLocalProfileActionDoesNotPromptForPassword(t *testing.T) {
 	}
 	if got.mode != modeRunning {
 		t.Fatalf("expected show action to run, got mode %d", got.mode)
+	}
+}
+
+func TestSuccessfulDeleteReturnsToMainMenuFromOutput(t *testing.T) {
+	m := NewModel(ops.New(t.TempDir()), build.Info{Version: "test"})
+	m.inProfile = true
+	m.activeProfile = "deleted-profile"
+	m.runningAction = actionDelete
+
+	model, _ := m.Update(resultMsg{output: "Deleted profile deleted-profile\n"})
+	got := model.(Model)
+	if got.inProfile || got.activeProfile != "" {
+		t.Fatalf("expected successful delete to clear profile context, got inProfile=%v active=%q", got.inProfile, got.activeProfile)
+	}
+
+	model, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	got = model.(Model)
+	if got.mode != modeMenu {
+		t.Fatalf("expected q to return to menu, got mode %d", got.mode)
+	}
+	if len(got.menu) == 0 || got.menu[0].act != actionCreateReverse {
+		t.Fatalf("expected main menu after q, got %#v", got.menu)
 	}
 }
 

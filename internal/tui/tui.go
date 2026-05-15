@@ -107,6 +107,7 @@ type Model struct {
 	activeProfile  string
 	pendingAction  action
 	pendingProfile string
+	runningAction  action
 
 	formAction action
 	allFields  []field
@@ -203,6 +204,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.output += "\nERROR: " + msg.err.Error() + "\n"
 		}
+		if m.runningAction == actionDelete && msg.err == nil {
+			m.inProfile = false
+			m.activeProfile = ""
+		}
+		m.runningAction = actionQuit
 		m.viewport.SetContent(m.output)
 		m.viewport.GotoTop()
 		return m, nil
@@ -561,6 +567,7 @@ func (m Model) reactiveTextField(key string) bool {
 }
 
 func (m Model) startAction(act action) (tea.Model, tea.Cmd) {
+	m.runningAction = actionQuit
 	switch act {
 	case actionCreateReverse:
 		return m.startForm(act, reverseFields())
@@ -624,6 +631,7 @@ func (m Model) startProfilePasswordPrompt(act action, profileName string) (tea.M
 
 func (m Model) startProfileAction(act action, profileName string) (tea.Model, tea.Cmd) {
 	m.mode = modeRunning
+	m.runningAction = act
 	return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
 		return m.runProfileAction(context.Background(), act, profileName, false)
 	}))
