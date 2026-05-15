@@ -137,6 +137,9 @@ func (c Controller) CreateWithProgress(ctx context.Context, p domain.Profile, ap
 		{name: "Install/check nginx and Xray on outer VPS", run: func() error {
 			return remoteRequired(ctx, &log, c, p, remoteBootstrapCommand(p.RemoteXrayBin))
 		}},
+		{name: "Validate outer local ports", run: func() error {
+			return remoteRequired(ctx, &log, c, p, remotePortCheckCommand(p, resume))
+		}},
 		{name: "Upload outer Xray config", run: func() error {
 			return remotePutRequired(ctx, &log, c, p, files.OuterConfig, p.OuterXrayConfig, "600")
 		}},
@@ -538,6 +541,25 @@ if ! test -x %[1]s && test -x /usr/local/bin/xray; then
   ln -sf /usr/local/bin/xray %[1]s
 fi
 test -x %[1]s`, quotedBin, quotedDir)
+}
+
+func remotePortCheckCommand(p domain.Profile, resume bool) string {
+	ports := []int{}
+	if p.Type == domain.Direct {
+		ports = uniquePositivePorts([]int{p.OuterLocalVLESSPort, p.OuterSocksPort})
+	}
+	if len(ports) == 0 {
+		return "true"
+	}
+	var b strings.Builder
+	b.WriteString("set -e\n")
+	if resume {
+		b.WriteString("if systemctl is-active --quiet " + shellQuote(p.OuterService) + "; then echo 'outer service already active; skipping port-free check for rescue'; exit 0; fi\n")
+	}
+	for _, port := range ports {
+		fmt.Fprintf(&b, "if ss -lnt | awk '{print $4}' | grep -Eq '[:.]%d$'; then echo 'outer TCP port %d is already listening' >&2; exit 1; fi\n", port, port)
+	}
+	return b.String()
 }
 
 func shellQuote(value string) string {

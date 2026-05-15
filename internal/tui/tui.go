@@ -106,6 +106,7 @@ type Model struct {
 	activeProfile string
 
 	formAction action
+	allFields  []field
 	fields     []field
 	inputs     []textinput.Model
 	focus      int
@@ -369,6 +370,117 @@ func (m *Model) focusField(next int) {
 	}
 }
 
+func (m Model) collectFormValues() map[string]string {
+	values := map[string]string{}
+	for _, f := range m.allFields {
+		values[f.key] = f.value
+	}
+	for i, f := range m.fields {
+		if f.checkbox || len(f.choices) > 0 {
+			values[f.key] = f.value
+			continue
+		}
+		if i < len(m.inputs) {
+			values[f.key] = m.inputs[i].Value()
+		}
+	}
+	return values
+}
+
+func (m *Model) syncAllFields(values map[string]string) {
+	for i := range m.allFields {
+		if value, ok := values[m.allFields[i].key]; ok {
+			m.allFields[i].value = value
+		}
+	}
+}
+
+func (m *Model) rebuildVisibleFields(preferredKey string) {
+	values := m.collectFormValues()
+	m.syncAllFields(values)
+	m.fields = m.visibleFields(values)
+	m.inputs = make([]textinput.Model, len(m.fields))
+	m.focus = 0
+	for i, f := range m.fields {
+		input := textinput.New()
+		input.Placeholder = f.placeholder
+		input.SetValue(f.value)
+		input.Prompt = "  "
+		input.CharLimit = 512
+		if f.secret {
+			input.EchoMode = textinput.EchoPassword
+			input.EchoCharacter = '*'
+		}
+		m.inputs[i] = input
+		if f.key == preferredKey {
+			m.focus = i
+		}
+	}
+	if len(m.fields) > 0 && m.focus >= len(m.fields) {
+		m.focus = len(m.fields) - 1
+	}
+	for i := range m.inputs {
+		m.inputs[i].Blur()
+	}
+	if len(m.fields) > 0 && !m.fields[m.focus].checkbox && len(m.fields[m.focus].choices) == 0 {
+		m.inputs[m.focus].Focus()
+	}
+}
+
+func (m Model) visibleFields(values map[string]string) []field {
+	var visible []field
+	for _, f := range m.allFields {
+		if m.fieldHidden(f, values) {
+			continue
+		}
+		if value, ok := values[f.key]; ok {
+			f.value = value
+		}
+		visible = append(visible, f)
+	}
+	return visible
+}
+
+func (m Model) fieldHidden(f field, values map[string]string) bool {
+	switch f.key {
+	case "use_update_socks":
+		return !m.settingsSOCKSAvailable()
+	case "ssh_password":
+		return values["ssh_auth"] != string(domain.SSHPassword)
+	case "ssh_key":
+		return values["ssh_auth"] == string(domain.SSHPassword)
+	case "ssh_socks_enabled", "ssh_socks_host", "ssh_socks_port", "ssh_socks_user", "ssh_socks_pass":
+		if yes(values["use_update_socks"]) {
+			return true
+		}
+		if f.key == "ssh_socks_enabled" {
+			return false
+		}
+		if !yes(values["ssh_socks_enabled"]) {
+			return true
+		}
+		if f.key == "ssh_socks_pass" && strings.TrimSpace(values["ssh_socks_user"]) == "" {
+			return true
+		}
+	case "update_socks_host", "update_socks_port", "update_socks_user", "update_socks_pass":
+		if !yes(values["update_socks_enabled"]) {
+			return true
+		}
+		if f.key == "update_socks_pass" && strings.TrimSpace(values["update_socks_user"]) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (m Model) settingsSOCKSAvailable() bool {
+	cfg, err := m.settingsStore.Load()
+	if err != nil {
+		return false
+	}
+	return cfg.UpdateSOCKSEnabled && cfg.UpdateSOCKSHost != "" && cfg.UpdateSOCKSPort > 0
+}
+
 func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.helpOpen {
 		switch msg.String() {
@@ -389,31 +501,30 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		if m.focus == len(m.inputs)-1 {
-			for i := range m.fields {
-				if !m.fields[i].checkbox && len(m.fields[i].choices) == 0 {
-					m.fields[i].value = m.inputs[i].Value()
-				}
-			}
 			return m.submit()
 		}
 		m.focusField(m.focus + 1)
 	case " ":
 		if m.fields[m.focus].checkbox {
 			m.fields[m.focus].value = toggleValue(m.fields[m.focus].value)
+			m.rebuildVisibleFields(m.fields[m.focus].key)
 			return m, nil
 		}
 		if len(m.fields[m.focus].choices) > 0 {
 			m.fields[m.focus].value = nextChoice(m.fields[m.focus])
+			m.rebuildVisibleFields(m.fields[m.focus].key)
 			return m, nil
 		}
 	case "left", "h":
 		if len(m.fields[m.focus].choices) > 0 {
 			m.fields[m.focus].value = prevChoice(m.fields[m.focus])
+			m.rebuildVisibleFields(m.fields[m.focus].key)
 			return m, nil
 		}
 	case "right", "l":
 		if len(m.fields[m.focus].choices) > 0 {
 			m.fields[m.focus].value = nextChoice(m.fields[m.focus])
+			m.rebuildVisibleFields(m.fields[m.focus].key)
 			return m, nil
 		}
 	case "up":
@@ -426,8 +537,21 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	var cmd tea.Cmd
+	key := m.fields[m.focus].key
 	m.inputs[m.focus], cmd = m.inputs[m.focus].Update(msg)
+	if m.reactiveTextField(key) {
+		m.rebuildVisibleFields(key)
+	}
 	return m, cmd
+}
+
+func (m Model) reactiveTextField(key string) bool {
+	switch key {
+	case "ssh_socks_user", "update_socks_user":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m Model) startAction(act action) (tea.Model, tea.Cmd) {
@@ -489,33 +613,17 @@ func (m Model) startForm(act action, fields []field) (tea.Model, tea.Cmd) {
 		m.mode = modeProfilePrompt
 	}
 	m.formAction = act
-	m.fields = fields
-	m.inputs = make([]textinput.Model, len(fields))
+	m.allFields = fields
+	m.fields = nil
+	m.inputs = nil
 	m.focus = 0
 	m.helpOpen = false
-	for i, f := range fields {
-		input := textinput.New()
-		input.Placeholder = f.placeholder
-		input.SetValue(f.value)
-		input.Prompt = "  "
-		input.CharLimit = 512
-		if f.secret {
-			input.EchoMode = textinput.EchoPassword
-			input.EchoCharacter = '*'
-		}
-		if i == 0 && !f.checkbox && len(f.choices) == 0 {
-			input.Focus()
-		}
-		m.inputs[i] = input
-	}
+	m.rebuildVisibleFields("")
 	return m, textinput.Blink
 }
 
 func (m Model) submit() (tea.Model, tea.Cmd) {
-	values := map[string]string{}
-	for _, f := range m.fields {
-		values[f.key] = f.value
-	}
+	values := m.collectFormValues()
 
 	switch m.formAction {
 	case actionEditSettings:
@@ -560,6 +668,13 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 		}
 		if values["ssh_password"] != "" {
 			_ = os.Setenv("XCT_SSH_PASSWORD", values["ssh_password"])
+		}
+		if err := m.controller.ValidateCreate(context.Background(), p); err != nil {
+			m.mode = modeOutput
+			m.err = err
+			m.output = "Invalid profile input.\nERROR: " + err.Error() + "\n"
+			m.viewport.SetContent(m.output)
+			return m, nil
 		}
 		return m.startProgress("Create "+p.Profile, func(progress ops.ProgressFunc) (string, error) {
 			return m.controller.CreateWithProgress(context.Background(), p, applyTuning, false, progress)
@@ -851,7 +966,7 @@ func commonFields(kind string) []field {
 		{key: "ssh_host", label: "Outer SSH host/IP"},
 		{key: "ssh_port", label: "Outer SSH port", value: "22"},
 		{key: "ssh_user", label: "Outer SSH username", value: "root"},
-		{key: "ssh_auth", label: "SSH authentication", value: "key", choices: []string{"key", "password"}},
+		{key: "ssh_auth", label: "SSH authentication", value: "password", choices: []string{"password", "key"}},
 		{key: "ssh_key", label: "SSH private key path, empty for default"},
 		{key: "ssh_password", label: "SSH password, only when auth=password", secret: true},
 		{key: "use_update_socks", label: "Use SOCKS5 from settings for SSH", value: "no", checkbox: true},
