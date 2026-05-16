@@ -96,7 +96,7 @@ func ValidateProfileName(value string) error {
 
 func ValidatePath(value string) error {
 	if !wsPathRE.MatchString(value) {
-		return errors.New("websocket path must start with / and contain simple URL path characters")
+		return errors.New("transport path must start with / and contain simple URL path characters")
 	}
 	return nil
 }

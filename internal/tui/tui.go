@@ -1073,8 +1073,8 @@ func (m Model) settingsFields() []field {
 func reverseFields() []field {
 	return append(commonFields("reverse"), []field{
 		{key: "cdn_port", label: "CDN HTTPS port", value: "2087"},
-		{key: "ws_path", label: "WebSocket path", value: "/xct-reverse-demo"},
-		{key: "backend_port", label: "Iran local Xray reverse backend port", value: "18191"},
+		{key: "ws_path", label: "XHTTP path", value: "/xct-reverse-demo"},
+		{key: "backend_port", label: "Iran local Xray reverse XHTTP backend port", value: "18191"},
 		{key: "iran_socks_listen", label: "Iran SOCKS listen address", value: "127.0.0.1"},
 		{key: "iran_socks_port", label: "Iran SOCKS port", value: "20141"},
 		{key: "iran_socks_user", label: "Iran SOCKS username", value: "rain"},
@@ -1250,8 +1250,8 @@ func (m Model) fieldHelpPopup() string {
 func fieldHelp(key string) string {
 	helps := map[string]string{
 		"profile":              "A short unique name for this tunnel profile. Use only letters, numbers, dash, or underscore. It is used in generated service names, config paths, and x-ui outbound tags.",
-		"domain":               "The CDN-enabled domain that points to the Iran VPS, for example sky-01.example.com. nginx on Iran will serve the WebSocket endpoint for this domain.",
-		"ssl_crt":              "Path on the Iran VPS to the TLS certificate file for the CDN domain. nginx uses this certificate for the public HTTPS/WebSocket listener.",
+		"domain":               "The CDN-enabled domain that points to the Iran VPS, for example sky-01.example.com. nginx on Iran will serve the public transport endpoint for this domain.",
+		"ssl_crt":              "Path on the Iran VPS to the TLS certificate file for the CDN domain. nginx uses this certificate for the public HTTPS listener.",
 		"ssl_key":              "Path on the Iran VPS to the private key that matches the TLS certificate. The file must already exist and be readable by nginx/root.",
 		"xray_bin":             "Path to the Xray binary on the Iran VPS. If you use x-ui, the default /usr/local/x-ui/bin/xray-linux-amd64 is usually correct.",
 		"ssh_host":             "IP address or hostname of the outer VPS. The controller uses SSH to install prerequisites, upload Xray configs, and manage systemd services.",
@@ -1269,8 +1269,8 @@ func fieldHelp(key string) string {
 		"remote_root_mode":     "How commands run on the outer VPS. Choose root when SSH logs in as root; choose sudo when SSH logs in as a non-root user with passwordless sudo.",
 		"apply_tuning":         "Apply TCP tuning on both servers after the profile is deployed. This enables BBR when available and adjusts buffers/backlogs for long-lived tunnels.",
 		"cdn_port":             "Public HTTPS-style port on the Iran CDN domain for this profile. Use a CDN-supported port that is not already used by another service.",
-		"ws_path":              "WebSocket path for this profile, such as /xct-reverse-demo. Use a unique path per profile to avoid conflicts.",
-		"backend_port":         "Local Iran Xray WebSocket backend port. nginx proxies the public WebSocket path to 127.0.0.1 on this port.",
+		"ws_path":              "Public transport path for this profile. Reverse profiles use XHTTP on this path; direct profiles use WebSocket. Use a unique path per profile to avoid conflicts.",
+		"backend_port":         "Local Iran Xray backend port. nginx proxies the public transport path to 127.0.0.1 on this port.",
 		"iran_socks_listen":    "Listen address for the Iran local SOCKS inbound used by reverse profiles. 127.0.0.1 keeps it local-only.",
 		"iran_socks_port":      "Local SOCKS port on Iran for reverse profiles. Apps or x-ui can use this to send traffic through the outer exit.",
 		"iran_socks_user":      "Username for the Iran local SOCKS inbound.",

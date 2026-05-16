@@ -282,16 +282,27 @@ func (c Controller) Test(ctx context.Context, name string) (string, error) {
 	appendRun(ctx, &log, c.Runner, "sh", "-c", listenerCommand(p))
 	appendRun(ctx, &log, c.Runner, p.XrayBin, "run", "-test", "-config", p.IranXrayConfig)
 	appendRun(ctx, &log, c.Runner, "nginx", "-t")
-	appendText(&log, "[2] Iran backend WebSocket")
-	appendRun(ctx, &log, c.Runner, "curl", wsArgs("http://127.0.0.1:"+strconv.Itoa(p.BackendPort)+p.WSPath)...)
-	appendText(&log, "[3] Iran public/CDN path")
-	appendRun(ctx, &log, c.Runner, "curl", wsArgs("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+p.WSPath)...)
+	if p.Type == domain.Reverse {
+		appendText(&log, "[2] Iran backend XHTTP listener")
+		appendRun(ctx, &log, c.Runner, "curl", httpHeadArgs("http://127.0.0.1:"+strconv.Itoa(p.BackendPort)+p.WSPath)...)
+		appendText(&log, "[3] Iran public/CDN XHTTP path")
+		appendRun(ctx, &log, c.Runner, "curl", httpHeadArgs("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+p.WSPath)...)
+	} else {
+		appendText(&log, "[2] Iran backend WebSocket")
+		appendRun(ctx, &log, c.Runner, "curl", wsArgs("http://127.0.0.1:"+strconv.Itoa(p.BackendPort)+p.WSPath)...)
+		appendText(&log, "[3] Iran public/CDN WebSocket path")
+		appendRun(ctx, &log, c.Runner, "curl", wsArgs("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+p.WSPath)...)
+	}
 	appendText(&log, "[4] Outer service/listeners")
 	appendRemote(ctx, &log, c, p, "systemctl is-active --quiet "+shellQuote(p.OuterService)+" && echo OK: outer service active || echo FAIL: outer service inactive")
 	appendRemote(ctx, &log, c, p, "ss -lntp | grep -E '"+outerListenerExpr(p)+"' || true")
-	appendText(&log, "[5] Outer TLS trust and public WebSocket to Iran/CDN")
+	appendText(&log, "[5] Outer TLS trust and public path to Iran/CDN")
 	appendRemote(ctx, &log, c, p, "curl -4 -sS -I "+shellQuote("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+"/")+" --connect-timeout 8 --max-time 12 || true")
-	appendRemote(ctx, &log, c, p, "curl "+strings.Join(shellQuoteArgs(wsArgs("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+p.WSPath)), " ")+" || true")
+	if p.Type == domain.Reverse {
+		appendRemote(ctx, &log, c, p, "curl "+strings.Join(shellQuoteArgs(httpHeadArgs("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+p.WSPath)), " ")+" || true")
+	} else {
+		appendRemote(ctx, &log, c, p, "curl "+strings.Join(shellQuoteArgs(wsArgs("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+p.WSPath)), " ")+" || true")
+	}
 	if p.Type == domain.Reverse {
 		appendText(&log, "[6] End-to-end reverse: Iran local SOCKS exits outer")
 		appendRun(ctx, &log, c.Runner, "curl", "-4", "-sS", "--proxy", fmt.Sprintf("socks5h://%s:%s@127.0.0.1:%d", p.IranSocksUser, p.IranSocksPass, p.IranSocksPort), domain.ChabokanURL, "--max-time", "25")
@@ -594,6 +605,10 @@ func wsArgs(url string) []string {
 	}
 }
 
+func httpHeadArgs(url string) []string {
+	return []string{"-4", "-sS", "-I", url, "--connect-timeout", "8", "--max-time", "12"}
+}
+
 func listenerCommand(p domain.Profile) string {
 	expr := fmt.Sprintf(":(%d|%d", p.CDNPort, p.BackendPort)
 	if p.IranSocksPort > 0 {
@@ -648,7 +663,7 @@ sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc 2>/dev/null || tru
 
 func describe(p domain.Profile) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Profile: %s\nType: %s\nDomain: %s\nCDN port: %d\nWS path: %s\n", p.Profile, p.Type, p.Domain, p.CDNPort, p.WSPath)
+	fmt.Fprintf(&b, "Profile: %s\nType: %s\nDomain: %s\nCDN port: %d\nTransport path: %s\n", p.Profile, p.Type, p.Domain, p.CDNPort, p.WSPath)
 	fmt.Fprintf(&b, "Iran backend: 127.0.0.1:%d\nIran service: %s\nIran config: %s\nIran nginx site: %s\n", p.BackendPort, p.IranService, p.IranXrayConfig, p.IranNginxSite)
 	fmt.Fprintf(&b, "Outer service: %s\nOuter config: %s\nOuter SSH: %s@%s:%d via SOCKS=%v\nRemote UUID: %s\n", p.OuterService, p.OuterXrayConfig, p.SSHUser, p.SSHHost, p.SSHPort, p.SSHSOCKSEnabled, p.RemoteUUID)
 	if p.Type == domain.Reverse {

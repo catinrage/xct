@@ -38,6 +38,49 @@ func All(p domain.Profile) (Files, error) {
 }
 
 func NginxSite(p domain.Profile) string {
+	if p.Type == domain.Reverse {
+		return fmt.Sprintf(`server {
+    listen %[1]d ssl http2;
+    listen [::]:%[1]d ssl http2;
+
+    server_name %[2]s;
+
+    ssl_certificate     %[3]s;
+    ssl_certificate_key %[4]s;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    access_log off;
+
+    client_max_body_size 0;
+    client_body_timeout 86400s;
+    client_header_timeout 86400s;
+    keepalive_timeout 86400s;
+
+    location %[5]s {
+        proxy_pass http://127.0.0.1:%[6]d;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_max_temp_file_size 0;
+
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+        send_timeout 86400s;
+    }
+
+    location / {
+        return 404;
+    }
+}
+`, p.CDNPort, p.Domain, p.SSLCrt, p.SSLKey, p.WSPath, p.BackendPort)
+	}
 	return fmt.Sprintf(`server {
     listen %[1]d ssl;
     listen [::]:%[1]d ssl;
@@ -236,7 +279,7 @@ func iranReverse(p domain.Profile) map[string]any {
 						},
 					}},
 				},
-				"streamSettings": wsNone(p.WSPath),
+				"streamSettings": xhttpNone(p.WSPath),
 			},
 		},
 		"routing": map[string]any{
@@ -289,7 +332,7 @@ func outerReverse(p domain.Profile) map[string]any {
 						"sniffing": sniffing(),
 					},
 				},
-				"streamSettings": wsTLS(p),
+				"streamSettings": xhttpTLS(p),
 			},
 		},
 	}
@@ -422,6 +465,33 @@ func wsTLS(p domain.Profile) map[string]any {
 			"path":            p.WSPath,
 			"headers":         map[string]any{"Host": p.Domain},
 			"heartbeatPeriod": 10,
+		},
+	}
+}
+
+func xhttpNone(path string) map[string]any {
+	return map[string]any{
+		"network": "xhttp",
+		"xhttpSettings": map[string]any{
+			"path": path,
+			"mode": "packet-up",
+		},
+	}
+}
+
+func xhttpTLS(p domain.Profile) map[string]any {
+	return map[string]any{
+		"network":  "xhttp",
+		"security": "tls",
+		"tlsSettings": map[string]any{
+			"serverName":    p.Domain,
+			"allowInsecure": false,
+			"alpn":          []string{"h2"},
+			"fingerprint":   "chrome",
+		},
+		"xhttpSettings": map[string]any{
+			"path": p.WSPath,
+			"mode": "auto",
 		},
 	}
 }

@@ -14,6 +14,8 @@ Traffic enters a local SOCKS or VLESS inbound on the Iran VPS, crosses the CDN t
 
 Use this when the outer VPS can reach the Iran CDN domain, but the Iran VPS should not connect directly to the outer VPS.
 
+Reverse profiles use VLESS Reverse over XHTTP/TLS with HTTP/2 ALPN on the public CDN side. nginx listens with `ssl http2` and proxies normal HTTP traffic to the local Xray XHTTP backend.
+
 ### Direct: outer -> Iran exit
 
 Traffic enters a local SOCKS or VLESS inbound on the outer VPS, crosses the CDN using VLESS over WebSocket/TLS, reaches nginx on the Iran VPS, and exits from Iran.
@@ -29,7 +31,7 @@ Use this when applications on the outer VPS need an Iran exit.
 - built-in test/debug/status actions
 - rescue action for half-created profiles
 - automatic outer VPS bootstrap
-- installs nginx on the outer VPS if missing
+- installs local/Iran nginx dependencies when requested
 - installs Xray on the outer VPS using `XTLS/Xray-install` if missing
 - optional SSH through SOCKS5
 - optional TCP/BBR tuning on both servers
@@ -184,6 +186,6 @@ Outer generated files:
 
 ## Notes
 
-Use unique CDN ports and WebSocket paths per profile. Avoid ports already used by x-ui, old nginx configs, FRP, GOST, or other tunnel profiles.
+Use unique CDN ports and transport paths per profile. Reverse profiles use XHTTP paths; direct profiles still use WebSocket paths. Avoid ports already used by x-ui, old nginx configs, FRP, GOST, or other tunnel profiles.
 
 For x-ui, prefer the generated local VLESS outbound snippet when possible. SOCKS snippets are also shown for testing and compatibility.
