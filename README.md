@@ -18,7 +18,7 @@ Reverse profiles use VLESS Reverse over XHTTP/TLS with HTTP/2 ALPN on the public
 
 ### Direct: outer -> Iran exit
 
-Traffic enters a local SOCKS or VLESS inbound on the outer VPS, crosses the CDN using VLESS over WebSocket/TLS, reaches nginx on the Iran VPS, and exits from Iran.
+Traffic enters a local SOCKS or VLESS inbound on the outer VPS, crosses the CDN using VLESS over XHTTP/TLS with HTTP/2 ALPN, reaches nginx on the Iran VPS, and exits from Iran.
 
 Use this when applications on the outer VPS need an Iran exit.
 
@@ -186,6 +186,6 @@ Outer generated files:
 
 ## Notes
 
-Use unique CDN ports and transport paths per profile. Reverse profiles use XHTTP paths; direct profiles still use WebSocket paths. Avoid ports already used by x-ui, old nginx configs, FRP, GOST, or other tunnel profiles.
+Use unique CDN ports and XHTTP transport paths per profile. Avoid ports already used by x-ui, old nginx configs, FRP, GOST, or other tunnel profiles.
 
 For x-ui, prefer the generated local VLESS outbound snippet when possible. SOCKS snippets are also shown for testing and compatibility.

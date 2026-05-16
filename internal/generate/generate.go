@@ -38,8 +38,7 @@ func All(p domain.Profile) (Files, error) {
 }
 
 func NginxSite(p domain.Profile) string {
-	if p.Type == domain.Reverse {
-		return fmt.Sprintf(`server {
+	return fmt.Sprintf(`server {
     listen %[1]d ssl http2;
     listen [::]:%[1]d ssl http2;
 
@@ -73,47 +72,6 @@ func NginxSite(p domain.Profile) string {
         proxy_read_timeout 86400s;
         proxy_send_timeout 86400s;
         send_timeout 86400s;
-    }
-
-    location / {
-        return 404;
-    }
-}
-`, p.CDNPort, p.Domain, p.SSLCrt, p.SSLKey, p.WSPath, p.BackendPort)
-	}
-	return fmt.Sprintf(`server {
-    listen %[1]d ssl;
-    listen [::]:%[1]d ssl;
-
-    server_name %[2]s;
-
-    ssl_certificate     %[3]s;
-    ssl_certificate_key %[4]s;
-
-    ssl_protocols TLSv1.2 TLSv1.3;
-
-    access_log off;
-
-    location %[5]s {
-        proxy_pass http://127.0.0.1:%[6]d;
-
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        proxy_buffering off;
-        proxy_request_buffering off;
-        proxy_max_temp_file_size 0;
-        proxy_socket_keepalive on;
-
-        proxy_read_timeout 86400;
-        proxy_send_timeout 86400;
-        send_timeout 86400;
     }
 
     location / {
@@ -343,7 +301,7 @@ func iranDirect(p domain.Profile) map[string]any {
 		"log": map[string]any{"loglevel": "warning"},
 		"inbounds": []any{
 			map[string]any{
-				"tag":      "direct-vless-ws-in-" + p.Profile,
+				"tag":      "direct-vless-xhttp-in-" + p.Profile,
 				"listen":   "127.0.0.1",
 				"port":     p.BackendPort,
 				"protocol": "vless",
@@ -354,7 +312,7 @@ func iranDirect(p domain.Profile) map[string]any {
 						"email": "outer-direct@" + p.Profile,
 					}},
 				},
-				"streamSettings": wsNone(p.WSPath),
+				"streamSettings": xhttpNone(p.WSPath),
 				"sniffing":       sniffing(),
 			},
 		},
@@ -366,7 +324,7 @@ func iranDirect(p domain.Profile) map[string]any {
 			"domainStrategy": "UseIPv4",
 			"rules": []any{
 				map[string]any{"type": "field", "network": "udp", "port": "443", "outboundTag": "blocked"},
-				map[string]any{"type": "field", "inboundTag": []string{"direct-vless-ws-in-" + p.Profile}, "outboundTag": "iran-direct"},
+				map[string]any{"type": "field", "inboundTag": []string{"direct-vless-xhttp-in-" + p.Profile}, "outboundTag": "iran-direct"},
 			},
 		},
 	}
@@ -393,7 +351,7 @@ func outerDirect(p domain.Profile) map[string]any {
 		"inbounds": inbounds,
 		"outbounds": []any{
 			map[string]any{
-				"tag":      "to-iran-vless-wss-" + p.Profile,
+				"tag":      "to-iran-vless-xhttp-" + p.Profile,
 				"protocol": "vless",
 				"settings": map[string]any{
 					"vnext": []any{map[string]any{
@@ -402,7 +360,7 @@ func outerDirect(p domain.Profile) map[string]any {
 						"users":   []any{map[string]any{"id": p.RemoteUUID, "encryption": "none"}},
 					}},
 				},
-				"streamSettings": wsTLS(p),
+				"streamSettings": xhttpTLS(p),
 				"mux":            map[string]any{"enabled": false},
 			},
 			map[string]any{"tag": "blocked", "protocol": "blackhole"},
@@ -414,7 +372,7 @@ func outerDirect(p domain.Profile) map[string]any {
 				map[string]any{
 					"type":        "field",
 					"inboundTag":  []string{"outer-local-vless-in-" + p.Profile, "outer-local-socks-in-" + p.Profile},
-					"outboundTag": "to-iran-vless-wss-" + p.Profile,
+					"outboundTag": "to-iran-vless-xhttp-" + p.Profile,
 				},
 			},
 		},
@@ -441,32 +399,6 @@ func localVLESSInbound(tag, listen string, port int, uuid, profile string) map[s
 
 func sniffing() map[string]any {
 	return map[string]any{"enabled": true, "destOverride": []string{"http", "tls"}}
-}
-
-func wsNone(path string) map[string]any {
-	return map[string]any{
-		"network":  "ws",
-		"security": "none",
-		"wsSettings": map[string]any{
-			"path": path,
-		},
-	}
-}
-
-func wsTLS(p domain.Profile) map[string]any {
-	return map[string]any{
-		"network":  "ws",
-		"security": "tls",
-		"tlsSettings": map[string]any{
-			"serverName":    p.Domain,
-			"allowInsecure": false,
-		},
-		"wsSettings": map[string]any{
-			"path":            p.WSPath,
-			"headers":         map[string]any{"Host": p.Domain},
-			"heartbeatPeriod": 10,
-		},
-	}
 }
 
 func xhttpNone(path string) map[string]any {

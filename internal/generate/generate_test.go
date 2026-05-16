@@ -37,6 +37,29 @@ func TestReverseConfigsAreJSONAndContainReverseTags(t *testing.T) {
 	}
 }
 
+func TestDirectConfigsUseXHTTPTransport(t *testing.T) {
+	p := sampleDirect()
+	iran, err := IranXrayConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, err := OuterXrayConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(iran) || !json.Valid(outer) {
+		t.Fatalf("generated configs must be valid JSON")
+	}
+	for _, want := range []string{`"network": "xhttp"`, `"mode": "packet-up"`, `"mode": "auto"`, `"alpn": [`} {
+		if !strings.Contains(string(iran)+string(outer), want) {
+			t.Fatalf("direct configs missing XHTTP setting %q\nIran:\n%s\nOuter:\n%s", want, iran, outer)
+		}
+	}
+	if strings.Contains(string(iran)+string(outer), `"network": "ws"`) {
+		t.Fatalf("direct configs should not use WebSocket transport\nIran:\n%s\nOuter:\n%s", iran, outer)
+	}
+}
+
 func TestDirectOutboundSnippetUsesOuterLocalVLESS(t *testing.T) {
 	p := sampleDirect()
 	snippet := OutboundSnippet(p)
@@ -68,17 +91,21 @@ func TestReverseNginxSiteProxiesXHTTPOverHTTP2(t *testing.T) {
 	}
 }
 
-func TestDirectNginxSiteKeepsWebSocketProxy(t *testing.T) {
+func TestDirectNginxSiteProxiesXHTTPOverHTTP2(t *testing.T) {
 	site := NginxSite(sampleDirect())
 	for _, want := range []string{
-		"listen 2083 ssl;",
+		"listen 2083 ssl http2;",
 		"location /xct-direct-demo",
-		"proxy_set_header Upgrade $http_upgrade;",
-		`proxy_set_header Connection "upgrade";`,
+		"proxy_set_header Host $http_host;",
 		"proxy_pass http://127.0.0.1:18192;",
 	} {
 		if !strings.Contains(site, want) {
 			t.Fatalf("direct nginx site missing %q:\n%s", want, site)
+		}
+	}
+	for _, unwanted := range []string{"proxy_set_header Upgrade", `proxy_set_header Connection "upgrade"`} {
+		if strings.Contains(site, unwanted) {
+			t.Fatalf("direct nginx site should not contain WebSocket header %q:\n%s", unwanted, site)
 		}
 	}
 }

@@ -282,27 +282,16 @@ func (c Controller) Test(ctx context.Context, name string) (string, error) {
 	appendRun(ctx, &log, c.Runner, "sh", "-c", listenerCommand(p))
 	appendRun(ctx, &log, c.Runner, p.XrayBin, "run", "-test", "-config", p.IranXrayConfig)
 	appendRun(ctx, &log, c.Runner, "nginx", "-t")
-	if p.Type == domain.Reverse {
-		appendText(&log, "[2] Iran backend XHTTP listener")
-		appendRun(ctx, &log, c.Runner, "curl", httpHeadArgs("http://127.0.0.1:"+strconv.Itoa(p.BackendPort)+p.WSPath)...)
-		appendText(&log, "[3] Iran public/CDN XHTTP path")
-		appendRun(ctx, &log, c.Runner, "curl", httpHeadArgs("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+p.WSPath)...)
-	} else {
-		appendText(&log, "[2] Iran backend WebSocket")
-		appendRun(ctx, &log, c.Runner, "curl", wsArgs("http://127.0.0.1:"+strconv.Itoa(p.BackendPort)+p.WSPath)...)
-		appendText(&log, "[3] Iran public/CDN WebSocket path")
-		appendRun(ctx, &log, c.Runner, "curl", wsArgs("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+p.WSPath)...)
-	}
+	appendText(&log, "[2] Iran backend XHTTP listener")
+	appendRun(ctx, &log, c.Runner, "curl", httpHeadArgs("http://127.0.0.1:"+strconv.Itoa(p.BackendPort)+p.WSPath)...)
+	appendText(&log, "[3] Iran public/CDN XHTTP path")
+	appendRun(ctx, &log, c.Runner, "curl", httpHeadArgs("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+p.WSPath)...)
 	appendText(&log, "[4] Outer service/listeners")
 	appendRemote(ctx, &log, c, p, "systemctl is-active --quiet "+shellQuote(p.OuterService)+" && echo OK: outer service active || echo FAIL: outer service inactive")
 	appendRemote(ctx, &log, c, p, "ss -lntp | grep -E '"+outerListenerExpr(p)+"' || true")
 	appendText(&log, "[5] Outer TLS trust and public path to Iran/CDN")
 	appendRemote(ctx, &log, c, p, "curl -4 -sS -I "+shellQuote("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+"/")+" --connect-timeout 8 --max-time 12 || true")
-	if p.Type == domain.Reverse {
-		appendRemote(ctx, &log, c, p, "curl "+strings.Join(shellQuoteArgs(httpHeadArgs("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+p.WSPath)), " ")+" || true")
-	} else {
-		appendRemote(ctx, &log, c, p, "curl "+strings.Join(shellQuoteArgs(wsArgs("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+p.WSPath)), " ")+" || true")
-	}
+	appendRemote(ctx, &log, c, p, "curl "+strings.Join(shellQuoteArgs(httpHeadArgs("https://"+p.Domain+":"+strconv.Itoa(p.CDNPort)+p.WSPath)), " ")+" || true")
 	if p.Type == domain.Reverse {
 		appendText(&log, "[6] End-to-end reverse: Iran local SOCKS exits outer")
 		appendRun(ctx, &log, c.Runner, "curl", "-4", "-sS", "--proxy", fmt.Sprintf("socks5h://%s:%s@127.0.0.1:%d", p.IranSocksUser, p.IranSocksPass, p.IranSocksPort), domain.ChabokanURL, "--max-time", "25")
@@ -592,17 +581,6 @@ func shellQuoteArgs(args []string) []string {
 		out[i] = shellQuote(arg)
 	}
 	return out
-}
-
-func wsArgs(url string) []string {
-	return []string{
-		"--http1.1", "-skv",
-		"-H", "Connection: Upgrade",
-		"-H", "Upgrade: websocket",
-		"-H", "Sec-WebSocket-Version: 13",
-		"-H", "Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==",
-		url, "--max-time", "8",
-	}
 }
 
 func httpHeadArgs(url string) []string {

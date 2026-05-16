@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -233,12 +234,29 @@ func TestRunningViewShowsTitleAndAbortHint(t *testing.T) {
 	m := NewModel(ops.New(t.TempDir()), build.Info{Version: "test"})
 	m.mode = modeRunning
 	m.runningTitle = "Testing profile demo"
+	m.progress = []ops.ProgressEvent{{Step: "Testing profile demo", Status: ops.StepRunning, Detail: "running"}}
 
 	view := m.viewRunning()
-	for _, want := range []string{"Testing profile demo", "Running command", "q/esc/ctrl+c: abort"} {
+	for _, want := range []string{"Testing profile demo", "running", "q/esc/ctrl+c: abort"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("running view missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestStartRunningUsesProgressList(t *testing.T) {
+	m := NewModel(ops.New(t.TempDir()), build.Info{Version: "test"})
+
+	model, _ := m.startRunning("Updating controller", actionUpdate, func(ctx context.Context) (string, error) {
+		return "done", nil
+	})
+	got := model.(Model)
+
+	if len(got.progress) != 1 {
+		t.Fatalf("expected one progress row, got %#v", got.progress)
+	}
+	if got.progress[0].Step != "Updating controller" || got.progress[0].Status != ops.StepRunning {
+		t.Fatalf("unexpected progress row: %#v", got.progress[0])
 	}
 }
 

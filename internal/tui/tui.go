@@ -841,7 +841,7 @@ func (m Model) startRunning(title string, act action, fn func(context.Context) (
 	m.runningAction = act
 	m.runningTitle = title
 	m.cancelRun = cancel
-	m.progress = nil
+	m.progress = []ops.ProgressEvent{{Step: title, Status: ops.StepRunning, Detail: "running"}}
 	return m, tea.Batch(m.spinner.Tick, runCmd(func() (string, error) {
 		return fn(ctx)
 	}))
@@ -925,7 +925,7 @@ func (m Model) viewRunning() string {
 		title = "Working"
 	}
 	b.WriteString(titleStyle.Render(title) + "\n")
-	b.WriteString(mutedStyle.Render("Deployment progress is updated live. Failed steps are saved for Rescue.") + "\n\n")
+	b.WriteString(mutedStyle.Render("Progress is updated live. Failed create steps are saved for Rescue.") + "\n\n")
 	for _, step := range m.progress {
 		icon := "·"
 		switch step.Status {
@@ -1087,8 +1087,8 @@ func reverseFields() []field {
 func directFields() []field {
 	return append(commonFields("direct"), []field{
 		{key: "cdn_port", label: "CDN HTTPS port", value: "2083"},
-		{key: "ws_path", label: "WebSocket path", value: "/xct-direct-demo"},
-		{key: "backend_port", label: "Iran local Xray direct backend port", value: "18192"},
+		{key: "ws_path", label: "XHTTP path", value: "/xct-direct-demo"},
+		{key: "backend_port", label: "Iran local Xray direct XHTTP backend port", value: "18192"},
 		{key: "outer_vless_listen", label: "Outer local VLESS listen address", value: "127.0.0.1"},
 		{key: "outer_vless_port", label: "Outer local VLESS port", value: "20151"},
 		{key: "outer_socks_listen", label: "Outer local SOCKS listen address", value: "127.0.0.1"},
@@ -1269,7 +1269,7 @@ func fieldHelp(key string) string {
 		"remote_root_mode":     "How commands run on the outer VPS. Choose root when SSH logs in as root; choose sudo when SSH logs in as a non-root user with passwordless sudo.",
 		"apply_tuning":         "Apply TCP tuning on both servers after the profile is deployed. This enables BBR when available and adjusts buffers/backlogs for long-lived tunnels.",
 		"cdn_port":             "Public HTTPS-style port on the Iran CDN domain for this profile. Use a CDN-supported port that is not already used by another service.",
-		"ws_path":              "Public transport path for this profile. Reverse profiles use XHTTP on this path; direct profiles use WebSocket. Use a unique path per profile to avoid conflicts.",
+		"ws_path":              "Public XHTTP transport path for this profile. Use a unique path per profile to avoid conflicts.",
 		"backend_port":         "Local Iran Xray backend port. nginx proxies the public transport path to 127.0.0.1 on this port.",
 		"iran_socks_listen":    "Listen address for the Iran local SOCKS inbound used by reverse profiles. 127.0.0.1 keeps it local-only.",
 		"iran_socks_port":      "Local SOCKS port on Iran for reverse profiles. Apps or x-ui can use this to send traffic through the outer exit.",
